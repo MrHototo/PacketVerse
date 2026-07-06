@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PacketVerse — 3D Network Traffic Explorer</title>
+  <meta name="description" content="Upload a PCAP/PCAPNG file and explore your network traffic in an interactive 3D visualization, with plain-English explanations." />
+  <link rel="stylesheet" href="css/styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <span class="brand-name">PacketVerse</span>
+      <span class="brand-tag">3D packet capture explorer</span>
+    </div>
+    <div class="topbar-actions">
+      <span id="file-meta" class="file-meta">No capture loaded</span>
+      <button id="load-demo-btn" class="btn btn-ghost">Try demo capture</button>
+      <label class="btn btn-primary" for="file-input">Upload PCAP / PCAPNG</label>
+      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden />
+      <button id="theme-toggle" class="btn btn-icon" title="Toggle light/dark">◐</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <div id="drop-zone" class="drop-zone">
+      <div class="drop-inner">
+        <p class="drop-title">Drop a .pcap / .pcapng file anywhere, or</p>
+        <label class="btn btn-primary" for="file-input">choose a file</label>
+        <p class="hint">Everything is parsed locally in your browser — nothing is uploaded to a server.</p>
+        <button id="load-demo-btn-2" class="btn btn-ghost" onclick="document.getElementById('load-demo-btn').click()">Or try the demo capture</button>
+      </div>
+    </div>
+
+    <div id="progress-bar" class="progress-bar"></div>
+
+    <section id="viewer">
+      <div id="scene-container"></div>
+      <div id="tooltip" class="tooltip"></div>
+      <div id="scene-controls">
+        <button id="reset-view-btn" class="btn btn-ghost">Reset view</button>
+        <button id="reset-time-btn" class="btn btn-ghost">Reset time range</button>
+        <button id="clear-focus-btn" class="btn btn-ghost">Clear selection</button>
+        <label class="btn btn-ghost checkbox-btn"><input type="checkbox" id="toggle-labels" checked /> Labels</label>
+      </div>
+      <div id="timeline-wrap">
+        <canvas id="timeline-canvas"></canvas>
+      </div>
+    </section>
+
+    <aside id="sidebar-left">
+      <div class="panel-block">
+        <h4>Search &amp; filter</h4>
+        <input id="search-input" type="text" placeholder="ip, port, protocol, hostname…" class="search-box" />
+        <div id="preset-chips" class="chip-row"></div>
+      </div>
+      <div class="panel-block">
+        <h4>Legend</h4>
+        <div id="legend-panel" class="legend"></div>
+        <p class="hint">Click a node or connection to follow its traffic — everything else dims. Click empty space to clear.</p>
+      </div>
+      <div class="panel-block">
+        <h4>Dashboard</h4>
+        <div id="dashboard-panel"></div>
+      </div>
+    </aside>
+
+    <aside id="sidebar-right">
+      <div class="panel-block">
+        <h4>Inspector</h4>
+        <div id="inspector-panel"></div>
+      </div>
+      <div class="panel-block">
+        <h4>Security findings</h4>
+        <div id="findings-panel"><p class="hint">Load a capture to run heuristic checks.</p></div>
+      </div>
+    </aside>
+  </main>
+
+  <footer id="footer">
+    <span>PacketVerse — MIT Licensed — runs 100% client-side.</span>
+  </footer>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
