@@ -89,6 +89,7 @@ function finish(layers, tags, endpointA, endpointB) {
     tags: [...tags],
     endpointA,
     endpointB,
+    payloadOffset: layers.payloadOffset ?? null,
     summary: buildSummary(layers, tags),
   };
 }
@@ -156,17 +157,20 @@ function decodeTransport(data, ip, layers, tags) {
     tags.add('TCP');
     if (l4.flags.SYN && !l4.flags.ACK) tags.add('Handshake');
     if (l4.flags.RST) tags.add('Errors');
+    layers.payloadOffset = l4.headerEnd;
     decodeApplication(data, ip, l4, layers, tags, l4.headerEnd);
   } else if (ip.protoNum === 17 && data.length >= offset + 8) {
     const l4 = decodeUdp(data, offset);
     layers.l4 = l4;
     tags.add('UDP');
+    layers.payloadOffset = offset + 8;
     decodeApplication(data, ip, l4, layers, tags, offset + 8);
   } else if (ip.protoNum === 1 || ip.protoNum === 58) {
     const type = data[offset];
     const code = data[offset + 1];
     layers.l4 = { type: ip.protoNum === 1 ? 'ICMP' : 'ICMPv6', icmpType: type, icmpCode: code };
     tags.add(ip.protoNum === 1 ? 'ICMP' : 'ICMPv6');
+    layers.payloadOffset = offset + 8;
   }
 }
 
@@ -236,19 +240,25 @@ function decodeApplication(data, ip, l4, layers, tags, payloadOffset) {
     tags.add('SSDP');
     return;
   }
-  if (dstPort === 443 || srcPort === 443) {
-    const tls = decodeTlsClientHello(data, payloadOffset);
-    if (tls) {
-      layers.l7 = tls;
-      tags.add('TLS');
-      return;
-    }
+  // Detect TLS by its actual record header byte signature (content-type 0x16,
+  // version 0x03xx) rather than assuming port 443 — real-world TLS shows up on
+  // many ports (DoT/853, DoH/443, SMTPS/465, mail/993, custom app ports, etc.),
+  // and Wireshark itself dissects TLS this way rather than by port alone.
+  const tls = looksLikeTlsRecord(data, payloadOffset) ? decodeTlsClientHello(data, payloadOffset) : null;
+  if (tls) {
+    layers.l7 = tls;
+    tags.add('TLS');
+    return;
   }
   const httpGuess = decodeHttpGuess(data, payloadOffset);
   if (httpGuess) {
     layers.l7 = httpGuess;
     tags.add('HTTP');
   }
+}
+
+function looksLikeTlsRecord(data, offset) {
+  return offset + 3 <= data.length && data[offset] === 0x16 && data[offset + 1] === 0x03;
 }
 
 function decodeDns(data, offset) {
@@ -324,10 +334,11 @@ function decodeTlsClientHello(data, offset) {
         const extType = (data[cursor] << 8) | data[cursor + 1];
         const extLen = (data[cursor + 2] << 8) | data[cursor + 3];
         if (extType === 0x0000) {
-          const listLen = (data[cursor + 6] << 8) | data[cursor + 7];
-          const nameLen = (data[cursor + 9] << 8) | data[cursor + 10];
+          // Extension record layout from `cursor`: extType(2) extLen(2)
+          // server_name_list_length(2) name_type(1) name_length(2) name...
+          const nameLen = (data[cursor + 7] << 8) | data[cursor + 8];
           sni = String.fromCharCode(
-            ...data.slice(cursor + 11, cursor + 11 + nameLen)
+            ...data.slice(cursor + 9, cursor + 9 + nameLen)
           );
           break;
         }

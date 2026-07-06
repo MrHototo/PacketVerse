@@ -10,7 +10,7 @@
 const DEFAULT_THRESHOLD = 22;
 
 function subnetKeyFor(hostId, host) {
-  if (host && host.kind === 'ipv4' && /^\d+\.\d+\.\d+\.\d+$/.test(hostId)) {
+  if (host && host.isIp && /^\d+\.\d+\.\d+\.\d+$/.test(hostId)) {
     const parts = hostId.split('.');
     return `cluster:${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
   }
@@ -25,7 +25,8 @@ function subnetKeyFor(hostId, host) {
  */
 export function computeDisplayGraph(hosts, flows, expanded = new Set(), threshold = DEFAULT_THRESHOLD) {
   if (hosts.size <= threshold) {
-    return { hosts, flows, clusters: new Map(), clustered: false };
+    const identity = new Map([...flows.keys()].map((k) => [k, k]));
+    return { hosts, flows, clusters: new Map(), clustered: false, rawFlowKeyToDisplayKey: identity };
   }
 
   const hostToCluster = new Map(); // hostId -> clusterKey (only if collapsed)
@@ -82,11 +83,13 @@ export function computeDisplayGraph(hosts, flows, expanded = new Set(), threshol
   }
 
   const displayFlows = new Map();
+  const rawFlowKeyToDisplayKey = new Map();
   for (const [flowKey, flow] of flows) {
     const a = hostToCluster.get(flow.hostA) || flow.hostA;
     const b = hostToCluster.get(flow.hostB) || flow.hostB;
     if (a === b) continue; // internal-to-cluster traffic, hidden while collapsed
     const key = [a, b].sort().join('<->') + ':' + flow.protocol;
+    rawFlowKeyToDisplayKey.set(flowKey, key);
     if (!displayFlows.has(key)) {
       displayFlows.set(key, {
         ...flow,
@@ -112,7 +115,7 @@ export function computeDisplayGraph(hosts, flows, expanded = new Set(), threshol
     if (a !== flow.hostA || b !== flow.hostB) merged.aggregated = true;
   }
 
-  return { hosts: displayHosts, flows: displayFlows, clusters, clustered: true };
+  return { hosts: displayHosts, flows: displayFlows, clusters, clustered: true, rawFlowKeyToDisplayKey };
 }
 
 export { DEFAULT_THRESHOLD };

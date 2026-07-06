@@ -52,23 +52,31 @@
       <div id="filter-bar" class="floating-bar">
         <span class="filter-icon">⌕</span>
         <input id="search-input" type="text" class="filter-input"
-               placeholder='Filter traffic — try: ip.addr==10.0.0.5, dns and udp.port==53, tcp.flags~/SYN/ ...' />
+               placeholder='Filter traffic — try: tls &amp;&amp; tcp.port==853, dns.qry.name==example.com, tcp.flags.syn==1 ...' />
         <button id="filter-help-btn" class="btn btn-icon" title="Filter syntax help">?</button>
+        <button id="fit-filtered-btn" class="btn btn-ghost" title="Reframe the camera on only what's currently shown">Fit to filtered</button>
         <button id="clear-filter-btn" class="btn btn-ghost">Clear</button>
       </div>
+      <div id="filter-status" class="filter-status hidden"></div>
       <div id="filter-help-popover" class="popover hidden">
         <h4>Filter syntax</h4>
+        <p class="hint">Filters are evaluated per-packet, like Wireshark's display filter — matching traffic is shown everywhere (3D view, packet list, dashboard) and everything else is hidden.</p>
         <ul>
-          <li><code>dns</code> — bare protocol / tag match</li>
-          <li><code>ip.addr==10.0.0.5</code> — match either src or dst</li>
-          <li><code>ip.src==10.0.0.5</code> / <code>ip.dst==8.8.8.8</code></li>
-          <li><code>tcp.port==443</code>, <code>udp.port==53</code></li>
-          <li><code>bytes>10000</code>, <code>packets>50</code></li>
+          <li><code>dns</code>, <code>tls</code>, <code>arp</code> — bare protocol / tag match</li>
+          <li><code>ip.addr==10.0.0.5</code> · <code>ip.src==</code> / <code>ip.dst==</code></li>
+          <li><code>eth.src==</code> / <code>eth.dst==</code> — MAC address</li>
+          <li><code>tcp.port==443</code>, <code>udp.port==53</code> (protocol-scoped)</li>
+          <li><code>tcp.flags.syn==1</code>, <code>tcp.flags.ack==1</code>, <code>tcp.flags.rst==1</code></li>
+          <li><code>dns.qry.name==example.com</code>, <code>dns.qry.type==AAAA</code></li>
+          <li><code>tls.handshake.extensions_server_name ~ /example/</code>, <code>tls.record.version</code></li>
+          <li><code>http.request.method==GET</code></li>
+          <li><code>vlan.id==10</code>, <code>icmp.type==8</code></li>
+          <li><code>bytes>10000</code>, <code>packets>50</code>, <code>duration>5</code></li>
           <li><code>ip.addr ~ /^10\./</code> — regex match</li>
           <li><code>dns and udp.port==53</code>, <code>(tls or http) and bytes>1000</code></li>
           <li><code>not arp</code>, <code>!broadcast</code></li>
         </ul>
-        <p class="hint">Plain text with no operators falls back to a simple substring search.</p>
+        <p class="hint">Plain text with no operators falls back to a simple substring search. Press Enter to snap the camera to the filtered results.</p>
       </div>
 
       <div class="chip-row-floating" id="preset-chips"></div>
@@ -92,6 +100,15 @@
       <!-- Panel collapse tabs -->
       <button id="toggle-left-panel" class="panel-tab panel-tab-left" title="Show/hide filters &amp; dashboard">☰</button>
       <button id="toggle-right-panel" class="panel-tab panel-tab-right" title="Show/hide inspector">ℹ</button>
+
+      <!-- Floating packet-list panel (Wireshark-style table), docked above the timeline -->
+      <div id="packetlist-wrap" class="floating-panel packetlist-panel">
+        <div class="timeline-header">
+          <span class="timeline-title">Packets — respects the current filter &amp; time range · click a row to inspect</span>
+          <button id="collapse-packetlist-btn" class="btn btn-icon" title="Collapse packet list">⌄</button>
+        </div>
+        <div id="packet-list" class="packet-list"></div>
+      </div>
 
       <!-- Floating bottom timeline overlay -->
       <div id="timeline-wrap" class="floating-panel">

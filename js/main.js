@@ -1,8 +1,16 @@
 /**
  * main.js
  * Application entry point: wires file upload/parsing, the graph model,
- * clustering, the 3D scene, timeline, filters, inspector, dashboard, and
- * security findings together. Everything runs client-side in the browser.
+ * clustering, the 3D scene, timeline, filters, packet list, inspector,
+ * dashboard, and security findings together. Everything runs client-side.
+ *
+ * Filtering model: the filter bar compiles a predicate evaluated per
+ * PACKET (Wireshark-display-filter granularity). Every refresh, we compute
+ * the filtered packet set, derive which raw flows they belong to, map those
+ * to the (possibly clustered) display-graph flow keys, and use that single
+ * "active set" to drive the 3D scene, the packet list, the dashboard, and
+ * the inspector's drill-down lists — so one filter genuinely narrows down
+ * every view at once instead of just dimming the 3D scene.
  */
 import { parseCapture } from './pcap/pcapParser.js';
 import { decodeFrame } from './pcap/protocolDecoder.js';
@@ -13,6 +21,7 @@ import { Scene3D } from './viz/scene3d.js';
 import { Timeline } from './ui/timeline.js';
 import { FilterBar } from './ui/filters.js';
 import { Inspector } from './ui/inspector.js';
+import { PacketList } from './ui/packetList.js';
 import { renderDashboard } from './ui/dashboard.js';
 import { PROTOCOL_COLORS, hexToCss } from './utils/colors.js';
 
@@ -43,6 +52,7 @@ const els = {
   filterHelpBtn: document.getElementById('filter-help-btn'),
   filterHelpPopover: document.getElementById('filter-help-popover'),
   clearFilterBtn: document.getElementById('clear-filter-btn'),
+  fitFilteredBtn: document.getElementById('fit-filtered-btn'),
   zoomInBtn: document.getElementById('zoom-in-btn'),
   zoomOutBtn: document.getElementById('zoom-out-btn'),
   expandAllBtn: document.getElementById('expand-all-btn'),
@@ -52,6 +62,10 @@ const els = {
   sidebarLeft: document.getElementById('sidebar-left'),
   sidebarRight: document.getElementById('sidebar-right'),
   collapseTimelineBtn: document.getElementById('collapse-timeline-btn'),
+  packetListWrap: document.getElementById('packetlist-wrap'),
+  packetListContainer: document.getElementById('packet-list'),
+  collapsePacketListBtn: document.getElementById('collapse-packetlist-btn'),
+  filterStatus: document.getElementById('filter-status'),
 };
 
 let model = null;
@@ -59,6 +73,7 @@ let scene = null;
 let timeline = null;
 let filterBar = null;
 let inspector = null;
+let packetList = null;
 let currentRange = null;
 let displayGraph = null;
 const expandedClusters = new Set();
@@ -69,6 +84,14 @@ function init() {
   inspector = new Inspector(els.inspectorPanel, els.inspectorBreadcrumb, {
     onFocusHost: (host) => scene?.focusOn('host', host.id),
     onFocusFlow: (flow) => scene?.focusOn('flow', flow.key),
+  });
+
+  packetList = new PacketList(els.packetListContainer, {
+    onSelectPacket: (entry) => {
+      inspector.showPacket(entry);
+      const displayKey = displayGraph?.rawFlowKeyToDisplayKey?.get(entry.flowKey);
+      if (displayKey) scene?.focusOn('flow', displayKey);
+    },
   });
 
   els.fileInput.addEventListener('change', (e) => {
@@ -109,6 +132,7 @@ function init() {
     }
   });
   els.clearFilterBtn?.addEventListener('click', () => filterBar?.clear());
+  els.fitFilteredBtn?.addEventListener('click', () => scene?.fitToVisible());
 
   els.zoomInBtn?.addEventListener('click', () => scene?.zoomIn());
   els.zoomOutBtn?.addEventListener('click', () => scene?.zoomOut());
@@ -135,6 +159,9 @@ function init() {
   els.collapseTimelineBtn?.addEventListener('click', () => {
     els.timelineWrap.classList.toggle('timeline-collapsed');
   });
+  els.collapsePacketListBtn?.addEventListener('click', () => {
+    els.packetListWrap.classList.toggle('packetlist-collapsed');
+  });
 
   renderLegend();
 }
@@ -145,6 +172,7 @@ function togglePanel(side) {
   const collapsed = drawer.classList.toggle('panel-collapsed');
   tab.classList.toggle('panel-collapsed', collapsed);
   els.timelineWrap.classList.toggle(`panel-collapsed-${side}`, collapsed);
+  els.packetListWrap.classList.toggle(`panel-collapsed-${side}`, collapsed);
 }
 
 async function loadFile(file) {
@@ -159,11 +187,12 @@ async function loadFile(file) {
     showProgress(null);
     return;
   }
-  buildAndRender(parsed.packets, file.name);
+  const decoded = parsed.packets.map((p) => decodeFrame(p.data, p.linkType));
+  finishLoad(parsed.packets, decoded, file.name);
 }
 
-function buildAndRender(rawPackets, label) {
-  const decoded = rawPackets.map((p) => decodeFrame(p.data, p.linkType));
+/** Shared setup path for both real uploads and the synthetic demo capture. */
+function finishLoad(rawPackets, decoded, label) {
   model = buildGraphModel(rawPackets, decoded);
   currentRange = { ...model.timeRange };
   expandedClusters.clear();
@@ -215,39 +244,73 @@ function rebuildGraph() {
 
 function refreshViews() {
   if (!model || !displayGraph) return;
-  const inRange = flowsInRange(displayGraph.flows, currentRange.start, currentRange.end);
-  const filtered = inRange.filter((f) => filterBar.matches(f));
-  const filteredHosts = new Map();
-  for (const f of filtered) {
-    if (displayGraph.hosts.has(f.hostA)) filteredHosts.set(f.hostA, displayGraph.hosts.get(f.hostA));
-    if (displayGraph.hosts.has(f.hostB)) filteredHosts.set(f.hostB, displayGraph.hosts.get(f.hostB));
-  }
-  const filteredFlowMap = new Map(filtered.map((f) => [f.key, f]));
-
-  scene.setActivity(new Set(filteredFlowMap.keys()));
 
   const inRangePackets = model.packets.filter(
     (p) => p.ts >= currentRange.start && p.ts <= currentRange.end
   );
+  const filterActive = filterBar.isActive();
+  const filteredPackets = filterActive ? inRangePackets.filter((p) => filterBar.matchesPacket(p)) : inRangePackets;
+
+  // Derive which raw flows the filtered packets belong to, then map those
+  // onto the (possibly clustered) display-graph flow keys.
+  const activeRawFlowKeys = new Set();
+  const activePacketIndexSet = new Set();
+  for (const p of filteredPackets) {
+    if (p.flowKey) activeRawFlowKeys.add(p.flowKey);
+    activePacketIndexSet.add(p.index);
+  }
+  const effectiveDisplayKeys = new Set();
+  for (const rawKey of activeRawFlowKeys) {
+    const dk = displayGraph.rawFlowKeyToDisplayKey.get(rawKey);
+    if (dk) effectiveDisplayKeys.add(dk);
+  }
+
+  scene.setActivity(effectiveDisplayKeys, filterActive);
+
+  const filteredHosts = new Map();
+  const filteredFlowMap = new Map();
+  for (const [key, flow] of displayGraph.flows) {
+    if (!filterActive || effectiveDisplayKeys.has(key)) {
+      filteredFlowMap.set(key, flow);
+      if (displayGraph.hosts.has(flow.hostA)) filteredHosts.set(flow.hostA, displayGraph.hosts.get(flow.hostA));
+      if (displayGraph.hosts.has(flow.hostB)) filteredHosts.set(flow.hostB, displayGraph.hosts.get(flow.hostB));
+    }
+  }
+
+  inspector.setFilterState({ filterActive, activeFlowKeys: activeRawFlowKeys, activePacketIndexSet });
+  packetList.setPackets(filteredPackets, model.timeRange.start);
+  updateFilterStatus(filterActive, filteredPackets.length, inRangePackets.length);
+
   renderDashboard(
     els.dashboardPanel,
     {
-      hosts: filteredHosts.size ? filteredHosts : displayGraph.hosts,
-      flows: filteredFlowMap.size ? filteredFlowMap : displayGraph.flows,
-      packets: inRangePackets,
+      hosts: filteredHosts.size || filterActive ? filteredHosts : displayGraph.hosts,
+      flows: filteredFlowMap.size || filterActive ? filteredFlowMap : displayGraph.flows,
+      packets: filteredPackets,
     },
     {
       onSelectHost: (hostId) => {
         filterBar.setTerm(`ip.addr==${hostId}`);
         const host = displayGraph.hosts.get(hostId);
         if (host) {
-          scene.focusOn(host.isCluster ? 'host' : 'host', hostId);
+          scene.focusOn('host', hostId);
           inspector.showHost(host);
         }
       },
       onSelectProtocol: (proto) => filterBar.appendTerm(proto),
     }
   );
+}
+
+function updateFilterStatus(filterActive, matched, total) {
+  if (!els.filterStatus) return;
+  if (!filterActive) {
+    els.filterStatus.textContent = '';
+    els.filterStatus.classList.add('hidden');
+    return;
+  }
+  els.filterStatus.classList.remove('hidden');
+  els.filterStatus.textContent = `Showing ${matched.toLocaleString()} of ${total.toLocaleString()} packets in range`;
 }
 
 function renderFindings() {
@@ -334,30 +397,7 @@ function showProgress(fraction) {
  * and for the GitHub Pages demo. */
 function loadSyntheticDemo() {
   const { packets, decoded } = buildSyntheticCapture();
-  buildAndRenderFromDecoded(packets, decoded, 'Synthetic demo capture');
-}
-
-function buildAndRenderFromDecoded(rawPackets, decoded, label) {
-  model = buildGraphModel(rawPackets, decoded);
-  currentRange = { ...model.timeRange };
-  expandedClusters.clear();
-  els.fileMeta.textContent = `${label} — ${model.packets.length} packets, ${model.hosts.size} hosts`;
-  els.app.classList.add('loaded');
-  if (!scene) scene = new Scene3D(els.sceneContainer, { onSelect: handleSelect, onHover: handleHover });
-  inspector.setModel(model);
-  timeline = new Timeline(els.timelineCanvas);
-  timeline.setData(model.packets, model.timeRange);
-  els.timelineCanvas.addEventListener('timeline:range', (e) => {
-    currentRange = e.detail;
-    refreshViews();
-  });
-  filterBar = new FilterBar({
-    searchInput: els.search,
-    presetContainers: [els.presets, els.presetsPanel],
-    onChange: refreshViews,
-  });
-  rebuildGraph();
-  scene.resetCamera();
+  finishLoad(packets, decoded, 'Synthetic demo capture');
 }
 
 function buildSyntheticCapture() {
@@ -393,6 +433,7 @@ function buildSyntheticFrame(proto, hostsIp, i) {
     tags: ['IPv4'],
     endpointA: a,
     endpointB: b,
+    payloadOffset: null,
   };
   if (proto === 'DNS') {
     base.layers.l3 = { type: 'IPv4', srcIp: a, dstIp: b, protocol: 'UDP', ttl: 64 };

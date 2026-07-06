@@ -206,9 +206,12 @@ export class Scene3D {
     }
   }
 
-  /** Dims/brightens edges based on which flows are within the active time-range/filter selection. */
-  setActivity(activeFlowKeys) {
+  /** Sets which flows currently pass the filter/time-range. When `filterActive` is true,
+   * non-matching hosts and connections are fully hidden (not just dimmed) so the scene
+   * genuinely narrows down to the matching traffic, Wireshark-display-filter style. */
+  setActivity(activeFlowKeys, filterActive = false) {
     this.activeFlowKeys = activeFlowKeys;
+    this.filterActive = filterActive;
     this._applyVisualState();
   }
 
@@ -224,6 +227,7 @@ export class Scene3D {
 
   _applyVisualState() {
     const active = this.activeFlowKeys || null;
+    const filterActive = !!this.filterActive;
     const focus = this.focusId;
     let focusedFlowKeys = null;
     let focusedHostIds = null;
@@ -240,23 +244,52 @@ export class Scene3D {
       focusedHostIds = new Set(entry ? [entry.flow.hostA, entry.flow.hostB] : []);
     }
 
+    let activeHostIds = null;
+    if (filterActive) {
+      activeHostIds = new Set();
+      for (const key of active || []) {
+        const f = this.edgeLines.get(key)?.flow;
+        if (f) { activeHostIds.add(f.hostA); activeHostIds.add(f.hostB); }
+      }
+    }
+
     for (const [key, entry] of this.edgeLines) {
-      const inRange = !active || active.has(key);
+      const passesFilter = !filterActive || (active && active.has(key));
       const inFocus = !focus || (focusedFlowKeys && focusedFlowKeys.has(key));
-      const visible = inRange;
-      entry.line.visible = visible;
-      entry.particle.visible = visible && inFocus && this.particlesEnabled;
-      entry.material.opacity = !visible ? 0 : inFocus ? ACTIVE_OPACITY : DIM_OPACITY;
+      entry.line.visible = passesFilter;
+      entry.particle.visible = passesFilter && inFocus && this.particlesEnabled;
+      entry.material.opacity = !passesFilter ? 0 : inFocus ? ACTIVE_OPACITY : DIM_OPACITY;
     }
 
     for (const [id, mesh] of this.nodeMeshes) {
+      const passesFilter = !filterActive || (activeHostIds && activeHostIds.has(id));
       const inFocus = !focus || (focusedHostIds && focusedHostIds.has(id));
+      mesh.visible = passesFilter;
       mesh.material.emissiveIntensity = inFocus ? 0.85 : 0.15;
       mesh.material.opacity = inFocus ? 1 : 0.35;
       mesh.material.transparent = !inFocus;
       const halo = this.nodeHalos.get(id);
-      if (halo) halo.material.opacity = inFocus ? 0.55 : 0.05;
+      if (halo) { halo.visible = passesFilter; halo.material.opacity = !passesFilter ? 0 : inFocus ? 0.55 : 0.05; }
+      const label = this.labels.get(id);
+      if (label) label.visible = passesFilter && this.showLabels;
     }
+  }
+
+  /** Reframes the camera to fit only the currently visible (post-filter) nodes. */
+  fitToVisible() {
+    if (!this.layout) return;
+    let maxDist = 60;
+    let any = false;
+    for (const [id, mesh] of this.nodeMeshes) {
+      if (!mesh.visible) continue;
+      any = true;
+      const p = this.layout.get(id);
+      maxDist = Math.max(maxDist, Math.hypot(p.x, p.y, p.z));
+    }
+    if (!any) return this.resetCamera();
+    const dist = Math.max(120, maxDist * 2.6);
+    this.camera.position.set(dist * 0.25, dist * 0.35, dist);
+    this.controls.target.set(0, 0, 0);
   }
 
   _onPointerMove(event) {
@@ -276,7 +309,10 @@ export class Scene3D {
   _pick() {
     this.raycaster.setFromCamera(this.pointer, this.camera);
     this.raycaster.params.Line2 = { threshold: 3 };
-    const targets = [...this.nodeGroup.children, ...this.edgeGroup.children.filter((c) => c.userData?.kind === 'flow' && c.visible)];
+    const targets = [
+      ...this.nodeGroup.children.filter((c) => c.visible),
+      ...this.edgeGroup.children.filter((c) => c.userData?.kind === 'flow' && c.visible),
+    ];
     const intersects = this.raycaster.intersectObjects(targets, false);
     return intersects.length ? intersects[0].object : null;
   }
