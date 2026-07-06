@@ -1,12 +1,13 @@
 /**
  * main.js
  * Application entry point: wires file upload/parsing, the graph model,
- * the 3D scene, timeline, filters, inspector, dashboard, and security
- * findings together. Everything runs client-side in the browser.
+ * clustering, the 3D scene, timeline, filters, inspector, dashboard, and
+ * security findings together. Everything runs client-side in the browser.
  */
 import { parseCapture } from './pcap/pcapParser.js';
 import { decodeFrame } from './pcap/protocolDecoder.js';
 import { buildGraphModel, flowsInRange } from './pcap/graphModel.js';
+import { computeDisplayGraph } from './pcap/clustering.js';
 import { runSecurityChecks } from './pcap/securityEngine.js';
 import { Scene3D } from './viz/scene3d.js';
 import { Timeline } from './ui/timeline.js';
@@ -21,21 +22,36 @@ const els = {
   app: document.getElementById('app'),
   sceneContainer: document.getElementById('scene-container'),
   timelineCanvas: document.getElementById('timeline-canvas'),
+  timelineWrap: document.getElementById('timeline-wrap'),
   search: document.getElementById('search-input'),
   presets: document.getElementById('preset-chips'),
+  presetsPanel: document.getElementById('preset-chips-panel'),
   inspectorPanel: document.getElementById('inspector-panel'),
+  inspectorBreadcrumb: document.getElementById('inspector-breadcrumb'),
   dashboardPanel: document.getElementById('dashboard-panel'),
   findingsPanel: document.getElementById('findings-panel'),
   tooltip: document.getElementById('tooltip'),
   fileMeta: document.getElementById('file-meta'),
   resetViewBtn: document.getElementById('reset-view-btn'),
-  resetTimeBtn: document.getElementById('reset-time-btn'),
   themeToggle: document.getElementById('theme-toggle'),
   loadDemoBtn: document.getElementById('load-demo-btn'),
   progressBar: document.getElementById('progress-bar'),
   clearFocusBtn: document.getElementById('clear-focus-btn'),
   toggleLabels: document.getElementById('toggle-labels'),
+  toggleParticles: document.getElementById('toggle-particles'),
   legendPanel: document.getElementById('legend-panel'),
+  filterHelpBtn: document.getElementById('filter-help-btn'),
+  filterHelpPopover: document.getElementById('filter-help-popover'),
+  clearFilterBtn: document.getElementById('clear-filter-btn'),
+  zoomInBtn: document.getElementById('zoom-in-btn'),
+  zoomOutBtn: document.getElementById('zoom-out-btn'),
+  expandAllBtn: document.getElementById('expand-all-btn'),
+  collapseAllBtn: document.getElementById('collapse-all-btn'),
+  toggleLeftPanel: document.getElementById('toggle-left-panel'),
+  toggleRightPanel: document.getElementById('toggle-right-panel'),
+  sidebarLeft: document.getElementById('sidebar-left'),
+  sidebarRight: document.getElementById('sidebar-right'),
+  collapseTimelineBtn: document.getElementById('collapse-timeline-btn'),
 };
 
 let model = null;
@@ -44,11 +60,17 @@ let timeline = null;
 let filterBar = null;
 let inspector = null;
 let currentRange = null;
+let displayGraph = null;
+const expandedClusters = new Set();
 
 init();
 
 function init() {
-  inspector = new Inspector(els.inspectorPanel);
+  inspector = new Inspector(els.inspectorPanel, els.inspectorBreadcrumb, {
+    onFocusHost: (host) => scene?.focusOn('host', host.id),
+    onFocusFlow: (flow) => scene?.focusOn('flow', flow.key),
+  });
+
   els.fileInput.addEventListener('change', (e) => {
     if (e.target.files[0]) loadFile(e.target.files[0]);
   });
@@ -72,6 +94,57 @@ function init() {
     document.body.classList.toggle('light');
   });
   els.loadDemoBtn.addEventListener('click', loadSyntheticDemo);
+
+  els.filterHelpBtn?.addEventListener('click', () => {
+    els.filterHelpPopover.classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e) => {
+    if (
+      els.filterHelpPopover &&
+      !els.filterHelpPopover.classList.contains('hidden') &&
+      !els.filterHelpPopover.contains(e.target) &&
+      e.target !== els.filterHelpBtn
+    ) {
+      els.filterHelpPopover.classList.add('hidden');
+    }
+  });
+  els.clearFilterBtn?.addEventListener('click', () => filterBar?.clear());
+
+  els.zoomInBtn?.addEventListener('click', () => scene?.zoomIn());
+  els.zoomOutBtn?.addEventListener('click', () => scene?.zoomOut());
+  els.resetViewBtn?.addEventListener('click', () => scene?.resetCamera());
+  els.clearFocusBtn?.addEventListener('click', () => {
+    scene?.clearFocus();
+    inspector?.showEmpty();
+  });
+  els.toggleLabels?.addEventListener('change', (e) => scene?.setLabelsVisible(e.target.checked));
+  els.toggleParticles?.addEventListener('change', (e) => scene?.setParticlesEnabled(e.target.checked));
+
+  els.expandAllBtn?.addEventListener('click', () => {
+    if (!displayGraph) return;
+    for (const key of displayGraph.clusters.keys()) expandedClusters.add(key);
+    rebuildGraph();
+  });
+  els.collapseAllBtn?.addEventListener('click', () => {
+    expandedClusters.clear();
+    rebuildGraph();
+  });
+
+  els.toggleLeftPanel?.addEventListener('click', () => togglePanel('left'));
+  els.toggleRightPanel?.addEventListener('click', () => togglePanel('right'));
+  els.collapseTimelineBtn?.addEventListener('click', () => {
+    els.timelineWrap.classList.toggle('timeline-collapsed');
+  });
+
+  renderLegend();
+}
+
+function togglePanel(side) {
+  const drawer = side === 'left' ? els.sidebarLeft : els.sidebarRight;
+  const tab = side === 'left' ? els.toggleLeftPanel : els.toggleRightPanel;
+  const collapsed = drawer.classList.toggle('panel-collapsed');
+  tab.classList.toggle('panel-collapsed', collapsed);
+  els.timelineWrap.classList.toggle(`panel-collapsed-${side}`, collapsed);
 }
 
 async function loadFile(file) {
@@ -93,6 +166,7 @@ function buildAndRender(rawPackets, label) {
   const decoded = rawPackets.map((p) => decodeFrame(p.data, p.linkType));
   model = buildGraphModel(rawPackets, decoded);
   currentRange = { ...model.timeRange };
+  expandedClusters.clear();
 
   els.fileMeta.textContent = `${label} — ${model.packets.length.toLocaleString()} packets, ${model.hosts.size} hosts, ${model.flows.size} conversations`;
   showProgress(null);
@@ -104,6 +178,8 @@ function buildAndRender(rawPackets, label) {
       onHover: handleHover,
     });
   }
+  inspector.setModel(model);
+
   timeline = new Timeline(els.timelineCanvas);
   timeline.setData(model.packets, model.timeRange);
   els.timelineCanvas.addEventListener('timeline:range', (e) => {
@@ -113,46 +189,65 @@ function buildAndRender(rawPackets, label) {
 
   filterBar = new FilterBar({
     searchInput: els.search,
-    presetContainer: els.presets,
+    presetContainers: [els.presets, els.presetsPanel],
     onChange: refreshViews,
   });
 
-  refreshViews(true);
+  rebuildGraph();
   scene.resetCamera();
 }
 
-function refreshViews(rebuild = false) {
+/** Recomputes the (possibly clustered) display graph and pushes it into the 3D scene. */
+function rebuildGraph() {
   if (!model) return;
-  const inRange = flowsInRange(model.flows, currentRange.start, currentRange.end);
+  displayGraph = computeDisplayGraph(model.hosts, model.flows, expandedClusters);
+  scene.setGraph(displayGraph.hosts, displayGraph.flows);
+
+  const protocolCounts = {};
+  for (const f of model.flows.values()) {
+    const k = f.appProtocol || f.protocol;
+    protocolCounts[k] = (protocolCounts[k] || 0) + 1;
+  }
+  filterBar.renderPresets(protocolCounts);
+  renderFindings();
+  refreshViews();
+}
+
+function refreshViews() {
+  if (!model || !displayGraph) return;
+  const inRange = flowsInRange(displayGraph.flows, currentRange.start, currentRange.end);
   const filtered = inRange.filter((f) => filterBar.matches(f));
   const filteredHosts = new Map();
   for (const f of filtered) {
-    if (model.hosts.has(f.hostA)) filteredHosts.set(f.hostA, model.hosts.get(f.hostA));
-    if (model.hosts.has(f.hostB)) filteredHosts.set(f.hostB, model.hosts.get(f.hostB));
+    if (displayGraph.hosts.has(f.hostA)) filteredHosts.set(f.hostA, displayGraph.hosts.get(f.hostA));
+    if (displayGraph.hosts.has(f.hostB)) filteredHosts.set(f.hostB, displayGraph.hosts.get(f.hostB));
   }
   const filteredFlowMap = new Map(filtered.map((f) => [f.key, f]));
-
-  if (rebuild) {
-    scene.setGraph(model.hosts, model.flows);
-    const protocolCounts = {};
-    for (const f of model.flows.values()) {
-      const k = f.appProtocol || f.protocol;
-      protocolCounts[k] = (protocolCounts[k] || 0) + 1;
-    }
-    filterBar.renderPresets(protocolCounts);
-    renderFindings();
-  }
 
   scene.setActivity(new Set(filteredFlowMap.keys()));
 
   const inRangePackets = model.packets.filter(
     (p) => p.ts >= currentRange.start && p.ts <= currentRange.end
   );
-  renderDashboard(els.dashboardPanel, {
-    hosts: filteredHosts.size ? filteredHosts : model.hosts,
-    flows: filteredFlowMap.size ? filteredFlowMap : model.flows,
-    packets: inRangePackets,
-  });
+  renderDashboard(
+    els.dashboardPanel,
+    {
+      hosts: filteredHosts.size ? filteredHosts : displayGraph.hosts,
+      flows: filteredFlowMap.size ? filteredFlowMap : displayGraph.flows,
+      packets: inRangePackets,
+    },
+    {
+      onSelectHost: (hostId) => {
+        filterBar.setTerm(`ip.addr==${hostId}`);
+        const host = displayGraph.hosts.get(hostId);
+        if (host) {
+          scene.focusOn(host.isCluster ? 'host' : 'host', hostId);
+          inspector.showHost(host);
+        }
+      },
+      onSelectProtocol: (proto) => filterBar.appendTerm(proto),
+    }
+  );
 }
 
 function renderFindings() {
@@ -163,8 +258,8 @@ function renderFindings() {
   }
   els.findingsPanel.innerHTML = findings
     .map(
-      (f) => `
-      <div class="finding finding-${f.severity}">
+      (f, i) => `
+      <div class="finding finding-${f.severity}" data-finding-idx="${i}">
         <div class="finding-head"><b>${f.type}</b><span class="badge badge-${f.severity}">${f.severity}</span></div>
         <div class="finding-conf">Confidence: ${(f.confidence * 100).toFixed(0)}%</div>
         <p>${f.explanation}</p>
@@ -172,12 +267,27 @@ function renderFindings() {
       </div>`
     )
     .join('');
+  els.findingsPanel.querySelectorAll('[data-finding-idx]').forEach((el, i) => {
+    el.addEventListener('click', () => {
+      const finding = findings[i];
+      const hostId = finding.affected?.[0];
+      if (hostId && displayGraph?.hosts.has(hostId)) {
+        scene.focusOn('host', hostId);
+        inspector.showHost(displayGraph.hosts.get(hostId));
+      }
+    });
+  });
 }
 
 function handleSelect(userData) {
   if (!userData) {
     scene?.clearFocus();
     inspector.showEmpty();
+    return;
+  }
+  if (userData.kind === 'cluster') {
+    expandedClusters.add(userData.id);
+    rebuildGraph();
     return;
   }
   if (userData.kind === 'host') {
@@ -195,10 +305,14 @@ function handleHover(userData, event) {
     els.tooltip.style.display = 'none';
     return;
   }
-  const text =
-    userData.kind === 'host'
-      ? `${userData.host.id} — ${userData.host.packets} pkts`
-      : `${userData.flow.hostA} \u2194 ${userData.flow.hostB} (${userData.flow.protocol})`;
+  let text;
+  if (userData.kind === 'cluster') {
+    text = `${userData.host.id.replace('cluster:', '')} — ${userData.host.memberIds?.length ?? 0} hosts (click to expand)`;
+  } else if (userData.kind === 'host') {
+    text = `${userData.host.id} — ${userData.host.packets} pkts`;
+  } else {
+    text = `${userData.flow.hostA} \u2194 ${userData.flow.hostB} (${userData.flow.protocol})`;
+  }
   els.tooltip.textContent = text;
   els.tooltip.style.display = 'block';
   els.tooltip.style.left = `${event.clientX + 12}px`;
@@ -215,34 +329,34 @@ function showProgress(fraction) {
   els.progressBar.style.width = `${Math.round(fraction * 100)}%`;
 }
 
-els.resetViewBtn?.addEventListener('click', () => scene?.resetCamera());
-els.resetTimeBtn?.addEventListener('click', () => timeline?.resetRange());
-els.clearFocusBtn?.addEventListener('click', () => {
-  scene?.clearFocus();
-  inspector?.showEmpty();
-});
-els.toggleLabels?.addEventListener('change', (e) => scene?.setLabelsVisible(e.target.checked));
-renderLegend();
-
-
 /** Generates a small synthetic capture in-memory so the app is explorable
  * without needing a real .pcap file on hand — useful for first-time users
  * and for the GitHub Pages demo. */
 function loadSyntheticDemo() {
   const { packets, decoded } = buildSyntheticCapture();
-  model = buildGraphModel(packets, decoded);
+  buildAndRenderFromDecoded(packets, decoded, 'Synthetic demo capture');
+}
+
+function buildAndRenderFromDecoded(rawPackets, decoded, label) {
+  model = buildGraphModel(rawPackets, decoded);
   currentRange = { ...model.timeRange };
-  els.fileMeta.textContent = `Synthetic demo capture — ${model.packets.length} packets, ${model.hosts.size} hosts`;
+  expandedClusters.clear();
+  els.fileMeta.textContent = `${label} — ${model.packets.length} packets, ${model.hosts.size} hosts`;
   els.app.classList.add('loaded');
   if (!scene) scene = new Scene3D(els.sceneContainer, { onSelect: handleSelect, onHover: handleHover });
+  inspector.setModel(model);
   timeline = new Timeline(els.timelineCanvas);
   timeline.setData(model.packets, model.timeRange);
   els.timelineCanvas.addEventListener('timeline:range', (e) => {
     currentRange = e.detail;
     refreshViews();
   });
-  filterBar = new FilterBar({ searchInput: els.search, presetContainer: els.presets, onChange: refreshViews });
-  refreshViews(true);
+  filterBar = new FilterBar({
+    searchInput: els.search,
+    presetContainers: [els.presets, els.presetsPanel],
+    onChange: refreshViews,
+  });
+  rebuildGraph();
   scene.resetCamera();
 }
 

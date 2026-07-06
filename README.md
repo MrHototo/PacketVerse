@@ -26,26 +26,40 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
 
 * **Drag-and-drop PCAP/PCAPNG upload** — parsed entirely in the browser via a
   small, dependency-free binary parser (`js/pcap/pcapParser.js`).
-* **Interactive 3D graph** — hosts as glowing nodes with IP/hostname labels,
-  conversations as thick, animated, protocol-colored connections (Three.js +
-  `OrbitControls` + bloom post-processing for a "living network" look).
+* **Full-bleed, Google-Maps-style 3D map** — the 3D graph *is* the app
+  surface (not a small panel); a search/filter bar, legend, dashboard, and
+  inspector float on top as collapsible glass panels, and +/- buttons give
+  Maps-style zoom control alongside scroll/drag orbiting.
+* **Wireshark-style filter expressions** — type structured queries like
+  `ip.addr==10.0.0.5`, `dns and udp.port==53`, `(tls or http) and bytes>1000`,
+  or `ip.addr ~ /^10\./` for regex matching — with a built-in syntax
+  cheatsheet (the `?` button). Plain text with no operators still works as a
+  simple substring search. One-click protocol chips remain available for
+  quick filtering without typing.
 * **Click-to-follow traffic** — click any host or connection to highlight it
   and everything it talks to; unrelated traffic dims out. Click empty space
-  or the "Clear selection" button to reset. A "Labels" toggle and a protocol
-  color legend (left sidebar) help keep dense captures readable.
+  or "Clear selection" to reset.
+* **Drill-down inspector** — click a host to see its conversations, click a
+  conversation to see its packets, click a packet for the full OSI-layer
+  breakdown, hex/ASCII view, and a plain-English explanation — with a
+  breadcrumb trail to jump back up at any level.
+* **Clickable dashboard** — top talkers and protocol bars aren't just
+  read-only stats; clicking one instantly filters the graph and inspector to
+  match, no typing required.
+* **Automatic subnet clustering** — captures with many hosts collapse same
+  `/24` subnets into a single expandable node (Maps-style "zoom out to see
+  less, zoom/click in to see more"); small captures show full detail
+  automatically. "Expand all subnets" / "Collapse subnets" buttons included.
 * **Timeline scrubber** — drag to select a time range; the 3D scene and
-  dashboard update instantly to match.
-* **Filtering & search** — free-text search plus one-click protocol chips
-  (TCP, UDP, DNS, TLS, ARP, HTTP, and more).
-* **Packet inspector** — click any node/connection, or drill into a packet,
-  for an OSI-layer breakdown, hex/ASCII view, and a plain-English
-  explanation of what that traffic means.
+  dashboard update instantly to match. Collapsible if you want more map space.
 * **Analytics dashboard** — packet/byte counts, protocol distribution, and
   top talkers, updating live with your filters.
 * **Built-in heuristic security checks** — port scan, broadcast storm,
   ARP-spoofing, and failed-connection detection, each with a confidence
-  score, severity, explanation, and suggested next step.
-* **Dark mode by default**, with a light mode toggle.
+  score, severity, explanation, and suggested next step; click a finding to
+  jump the 3D view to the affected host.
+* **Dark mode by default**, with a light mode toggle. Collapsible left/right
+  panels so the map can take the full screen when you want it to.
 * **Zero dependencies to install** — Three.js is loaded via a CDN import
   map; there is no `npm install` or bundler step required to run the app.
 

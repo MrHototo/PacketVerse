@@ -27,7 +27,7 @@ export function buildGraphModel(rawPackets, decodedFrames) {
     if (b && b !== a) touchHost(hosts, b, frame, ts, raw.originalLength);
 
     const flowKey = buildFlowKey(frame, a, b);
-    const flow = touchFlow(flows, flowKey, frame, a, b, ts, raw.originalLength);
+    const flow = touchFlow(flows, flowKey, frame, a, b, ts, raw.originalLength, i);
 
     packets.push({
       index: i,
@@ -86,7 +86,7 @@ function buildFlowKey(frame, a, b) {
   return forward < reverse ? forward : reverse;
 }
 
-function touchFlow(flows, key, frame, a, b, ts, bytes) {
+function touchFlow(flows, key, frame, a, b, ts, bytes, packetIndex) {
   let flow = flows.get(key);
   if (!flow) {
     flow = {
@@ -111,6 +111,7 @@ function touchFlow(flows, key, frame, a, b, ts, bytes) {
   flow.packets += 1;
   flow.bytes += bytes;
   flow.lastSeen = ts;
+  flow.packetIndices.push(packetIndex);
   frame.tags.forEach((t) => flow.tags.add(t));
   if (frame.layers.l4?.type === 'TCP') {
     Object.entries(frame.layers.l4.flags).forEach(([f, set]) => {

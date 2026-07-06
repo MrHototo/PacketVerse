@@ -24,6 +24,7 @@ export class Scene3D {
     this.onSelect = onSelect || (() => {});
     this.onHover = onHover || (() => {});
     this.showLabels = true;
+    this.particlesEnabled = true;
     this.focusId = null; // currently focused host id, or null
 
     this.scene = new THREE.Scene();
@@ -104,6 +105,22 @@ export class Scene3D {
     this.labelGroup.visible = visible;
   }
 
+  setParticlesEnabled(enabled) {
+    this.particlesEnabled = enabled;
+    this._applyVisualState();
+  }
+
+  /** Dolly the camera toward/away from the current orbit target (Google-Maps-style +/- zoom). */
+  zoomBy(factor) {
+    const dir = this.camera.position.clone().sub(this.controls.target);
+    const dist = dir.length();
+    const next = THREE.MathUtils.clamp(dist * factor, this.controls.minDistance, this.controls.maxDistance);
+    dir.setLength(next);
+    this.camera.position.copy(this.controls.target).add(dir);
+  }
+  zoomIn() { this.zoomBy(0.78); }
+  zoomOut() { this.zoomBy(1.28); }
+
   /** Rebuilds meshes to match the current (filtered) hosts/flows. */
   setGraph(hosts, flows) {
     this._disposeGroup(this.nodeGroup);
@@ -125,24 +142,28 @@ export class Scene3D {
       const size = 2.6 + 7 * Math.cbrt(host.bytes / maxBytes);
       const color = nodeColorFor(host);
 
-      const geometry = new THREE.SphereGeometry(size, 20, 20);
+      const clusterSize = host.isCluster ? size * 1.6 : size;
+      const geometry = host.isCluster
+        ? new THREE.IcosahedronGeometry(clusterSize, 1)
+        : new THREE.SphereGeometry(size, 20, 20);
       const material = new THREE.MeshStandardMaterial({
         color,
         emissive: color,
         emissiveIntensity: 0.85,
         roughness: 0.35,
         metalness: 0.15,
+        wireframe: !!host.isCluster,
       });
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.userData = { kind: 'host', id: host.id, host, baseColor: color, baseSize: size };
+      mesh.userData = { kind: host.isCluster ? 'cluster' : 'host', id: host.id, host, baseColor: color, baseSize: clusterSize };
       this.nodeGroup.add(mesh);
       this.nodeMeshes.set(host.id, mesh);
 
-      const halo = makeHaloSprite(color, size * 5);
+      const halo = makeHaloSprite(color, clusterSize * (host.isCluster ? 7 : 5));
       this.labelGroup.add(halo);
       this.nodeHalos.set(host.id, halo);
 
-      const label = makeTextSprite(shortenId(host.id));
+      const label = makeTextSprite(host.isCluster ? `\u25C8 ${shortenId(host.id.replace('cluster:', ''))} (${host.memberIds?.length ?? '?'} hosts)` : shortenId(host.id));
       label.visible = this.showLabels;
       this.labelGroup.add(label);
       this.labels.set(host.id, label);
@@ -224,7 +245,7 @@ export class Scene3D {
       const inFocus = !focus || (focusedFlowKeys && focusedFlowKeys.has(key));
       const visible = inRange;
       entry.line.visible = visible;
-      entry.particle.visible = visible && inFocus;
+      entry.particle.visible = visible && inFocus && this.particlesEnabled;
       entry.material.opacity = !visible ? 0 : inFocus ? ACTIVE_OPACITY : DIM_OPACITY;
     }
 
@@ -325,6 +346,7 @@ export class Scene3D {
 }
 
 function nodeColorFor(host) {
+  if (host.isCluster) return 0xe9b44c;
   if (host.protocols.has('Broadcast')) return 0x9e9e9e;
   if (host.protocols.has('Multicast')) return 0xb0bec5;
   if (host.protocols.has('DNS')) return 0x4caf50;
