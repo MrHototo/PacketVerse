@@ -82,7 +82,6 @@
           <button id="clear-filter-btn" class="btn btn-ghost">Clear</button>
         </div>
         <div id="filter-status" class="filter-status hidden"></div>
-        <div class="chip-row-floating" id="preset-chips"></div>
 
         <!-- Focus / ego-network breadcrumb — appears once the user clicks into a node,
              showing the drill-down path and letting them expand outward or exit back
@@ -146,22 +145,29 @@
       <button id="toggle-left-panel" class="panel-tab panel-tab-left" title="Show/hide filters &amp; dashboard">☰</button>
       <button id="toggle-right-panel" class="panel-tab panel-tab-right" title="Show/hide inspector">ℹ</button>
 
-      <!-- Floating packet-list panel (Wireshark-style table), docked above the timeline -->
-      <div id="packetlist-wrap" class="floating-panel packetlist-panel">
-        <div class="timeline-header">
-          <span class="timeline-title">Packets — respects the current filter &amp; time range · click a row to inspect</span>
-          <button id="collapse-packetlist-btn" class="btn btn-icon" title="Collapse packet list">⌄</button>
+      <!-- Bottom stack: packet list + timeline, laid out as a real flex column
+           (not independently absolute-positioned) so the two panels are always
+           flush against each other -- collapsing one simply shrinks its flex
+           item and the other reflows automatically, with no JS pixel math and
+           no risk of a residual gap or overlap. -->
+      <div id="bottom-stack" class="bottom-stack">
+        <!-- Floating packet-list panel (Wireshark-style table), docked above the timeline -->
+        <div id="packetlist-wrap" class="floating-panel packetlist-panel">
+          <div class="timeline-header">
+            <span class="timeline-title">Packets — respects the current filter &amp; time range · click a row to inspect</span>
+            <button id="collapse-packetlist-btn" class="btn btn-icon" title="Collapse packet list">⌄</button>
+          </div>
+          <div id="packet-list" class="packet-list"></div>
         </div>
-        <div id="packet-list" class="packet-list"></div>
-      </div>
 
-      <!-- Floating bottom timeline overlay -->
-      <div id="timeline-wrap" class="floating-panel">
-        <div class="timeline-header">
-          <span class="timeline-title">Timeline — drag to select a range, click to jump</span>
-          <button id="collapse-timeline-btn" class="btn btn-icon" title="Collapse timeline">⌄</button>
+        <!-- Floating bottom timeline overlay -->
+        <div id="timeline-wrap" class="floating-panel">
+          <div class="timeline-header">
+            <span class="timeline-title">Timeline — drag to select a range, click to jump</span>
+            <button id="collapse-timeline-btn" class="btn btn-icon" title="Collapse timeline">⌄</button>
+          </div>
+          <canvas id="timeline-canvas"></canvas>
         </div>
-        <canvas id="timeline-canvas"></canvas>
       </div>
     </section>
 

@@ -234,14 +234,6 @@ button, input { font-family: inherit; }
 .popover ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.7; }
 .popover code { background: var(--bg-panel-alt); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
 
-.chip-row-floating {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: center;
-  width: min(680px, 80vw);
-}
-
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .chip {
   border: 1px solid var(--border);
@@ -259,11 +251,15 @@ button, input { font-family: inherit; }
 .zoom-controls {
   position: absolute;
   right: 16px;
-  bottom: 130px;
+  /* Tracks #bottom-stack's real, current height (updated live by a
+     ResizeObserver in main.js) so these buttons never sit on top of the
+     packet-list/timeline panels, in any collapsed/expanded combination. */
+  bottom: calc(var(--bottom-stack-h, 344px) + 24px);
   z-index: 15;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: bottom 0.2s ease;
 }
 .zoom-btn {
   width: 36px;
@@ -405,21 +401,36 @@ button, input { font-family: inherit; }
   font-size: 13px;
 }
 
-/* ---------- Timeline overlay (bottom, floating) ---------- */
-
-#timeline-wrap {
+/* ---------- Bottom stack: packet list + timeline, one real flex column ----------
+   Both panels used to be independently absolute-positioned with hardcoded pixel
+   offsets that had to be kept in sync by hand -- that's what caused the stale
+   gap/overlap bugs when either panel collapsed. Now there is exactly one
+   absolutely-positioned element (this wrapper); the two panels inside it are
+   normal flex children, so they are always flush against each other and the
+   wrapper's own rendered height is always accurate, by construction. */
+#bottom-stack {
   position: absolute;
   left: 340px;
   right: 340px;
   bottom: 12px;
-  height: 100px;
   z-index: 13;
-  padding: 8px 10px 10px;
-  transition: left 0.25s ease, right 0.25s ease, height 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: left 0.25s ease, right 0.25s ease;
 }
-#timeline-wrap.panel-collapsed-left { left: 12px; }
-#timeline-wrap.panel-collapsed-right { right: 12px; }
-#timeline-wrap.timeline-collapsed { height: 34px; overflow: hidden; }
+#bottom-stack.panel-collapsed-left { left: 12px; }
+#bottom-stack.panel-collapsed-right { right: 12px; }
+
+/* ---------- Timeline overlay (bottom, floating) ---------- */
+
+#timeline-wrap {
+  flex: 0 0 100px;
+  padding: 8px 10px 10px;
+  transition: flex-basis 0.2s ease;
+  overflow: hidden;
+}
+#timeline-wrap.timeline-collapsed { flex-basis: 34px; }
 .timeline-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .timeline-title { font-size: 11px; color: var(--text-dim); }
 #timeline-canvas { width: 100%; height: 68px; cursor: crosshair; display: block; }
@@ -545,7 +556,7 @@ button, input { font-family: inherit; }
 
 @media (max-width: 900px) {
   :root { --panel-w: 84vw; }
-  #timeline-wrap { left: 12px; right: 12px; }
+  #bottom-stack { left: 12px; right: 12px; }
   .zoom-controls, .scene-controls-panel { display: none; }
   .floating-bar { width: 90vw; }
 }
@@ -566,20 +577,14 @@ button, input { font-family: inherit; }
 /* ---------- Packet list panel (Wireshark-style table, docked above the timeline) ---------- */
 
 #packetlist-wrap {
-  position: absolute;
-  left: 340px;
-  right: 340px;
-  bottom: 128px;
-  height: 220px;
-  z-index: 13;
+  flex: 0 0 220px;
   padding: 8px 10px 6px;
   display: flex;
   flex-direction: column;
-  transition: left 0.25s ease, right 0.25s ease, height 0.2s ease;
+  transition: flex-basis 0.2s ease;
+  overflow: hidden;
 }
-#packetlist-wrap.panel-collapsed-left { left: 12px; }
-#packetlist-wrap.panel-collapsed-right { right: 12px; }
-#packetlist-wrap.packetlist-collapsed { height: 34px; overflow: hidden; }
+#packetlist-wrap.packetlist-collapsed { flex-basis: 34px; }
 
 .packet-list {
   flex: 1;

@@ -48,8 +48,8 @@ const els = {
   renderErrorDismiss: document.getElementById('render-error-dismiss'),
   timelineCanvas: document.getElementById('timeline-canvas'),
   timelineWrap: document.getElementById('timeline-wrap'),
+  bottomStack: document.getElementById('bottom-stack'),
   search: document.getElementById('search-input'),
-  presets: document.getElementById('preset-chips'),
   presetsPanel: document.getElementById('preset-chips-panel'),
   inspectorPanel: document.getElementById('inspector-panel'),
   inspectorBreadcrumb: document.getElementById('inspector-breadcrumb'),
@@ -120,6 +120,19 @@ let focusStack = [];
 init();
 
 function init() {
+  // Keep the zoom-control column pinned just above the bottom stack's real,
+  // *current* height at all times -- collapsing/expanding either the packet
+  // list or the timeline (or the window resizing) all change that height,
+  // and this one observer keeps the CSS var correct for every case instead
+  // of every call site needing to remember to recompute a pixel offset.
+  if (els.bottomStack && typeof ResizeObserver !== 'undefined') {
+    const syncBottomStackHeight = () => {
+      document.documentElement.style.setProperty('--bottom-stack-h', `${els.bottomStack.offsetHeight}px`);
+    };
+    new ResizeObserver(syncBottomStackHeight).observe(els.bottomStack);
+    syncBottomStackHeight();
+  }
+
   inspector = new Inspector(els.inspectorPanel, els.inspectorBreadcrumb, {
     onFocusHost: (host) => pushFocus({ kind: 'host', id: host.id, hops: 1 }),
     onFocusFlow: (flow) => pushFocus({ kind: 'flow', id: flow.key, hops: 1 }),
@@ -348,8 +361,7 @@ function togglePanel(side, persist = true, forceCollapsed = null) {
   const tab = side === 'left' ? els.toggleLeftPanel : els.toggleRightPanel;
   const collapsed = forceCollapsed !== null ? (drawer.classList.toggle('panel-collapsed', forceCollapsed), forceCollapsed) : drawer.classList.toggle('panel-collapsed');
   tab.classList.toggle('panel-collapsed', collapsed);
-  els.timelineWrap.classList.toggle(`panel-collapsed-${side}`, collapsed);
-  els.packetListWrap.classList.toggle(`panel-collapsed-${side}`, collapsed);
+  els.bottomStack?.classList.toggle(`panel-collapsed-${side}`, collapsed);
   if (persist) localStorage.setItem(side === 'left' ? 'pv_leftPanelOpen' : 'pv_rightPanelOpen', String(!collapsed));
 }
 
@@ -397,6 +409,8 @@ function finishLoadInner(rawPackets, decoded, label) {
 
   if (!renderersInitialized) {
     renderersInitialized = true;
+    console.log('[PacketVerse] first-load: constructing renderers. container size:',
+      els.sceneContainer3d?.clientWidth, 'x', els.sceneContainer3d?.clientHeight);
     try {
       scene3d = new Scene3D(els.sceneContainer3d, {
         onSelect: selectObject,
@@ -419,25 +433,45 @@ function finishLoadInner(rawPackets, decoded, label) {
       onHover: handleHover,
       onError: showRenderError,
     });
+    console.log('[PacketVerse] first-load: renderers constructed. scene3d:', !!scene3d, 'scene2d:', !!scene2d, 'mode:', vizMode);
     applyVizModeUI(false);
+
+    // Timeline/FilterBar are constructed exactly once, same as the scenes above.
+    // They used to be rebuilt on *every* load, which silently re-attached a
+    // fresh set of mousedown/mousemove/mouseup/resize/input listeners on top
+    // of the still-live previous set each time -- harmless-looking on a single
+    // upload, but a real bug once you factor in that "re-upload from inside the
+    // dashboard" was the reported workaround: it was leaving behind an
+    // ever-growing pile of duplicate listeners rather than being a clean reset.
+    timeline = new Timeline(els.timelineCanvas);
+    els.timelineCanvas.addEventListener('timeline:range', (e) => {
+      currentRange = e.detail;
+      refreshViews();
+    });
+    filterBar = new FilterBar({
+      searchInput: els.search,
+      presetContainers: [els.presetsPanel], // top floating row removed: redundant with the left drawer's "Quick protocol filters" panel
+      onChange: refreshViews,
+    });
+  } else {
+    filterBar.clear(); // start every newly-loaded capture with a clean, unfiltered view
   }
   inspector.setModel(model);
-
-  timeline = new Timeline(els.timelineCanvas);
   timeline.setData(model.packets, model.timeRange);
-  els.timelineCanvas.addEventListener('timeline:range', (e) => {
-    currentRange = e.detail;
-    refreshViews();
-  });
-
-  filterBar = new FilterBar({
-    searchInput: els.search,
-    presetContainers: [els.presets, els.presetsPanel],
-    onChange: refreshViews,
-  });
 
   rebuildGraph();
   viz?.resetCamera(false);
+  // Belt-and-suspenders for the very first load only: re-measure and re-fit one
+  // frame later. Every code path here has been verified safe on an already-sized
+  // container, but this closes off any remaining browser-specific layout-timing
+  // edge case (e.g. a deferred reflow) that pure static tracing can't rule out.
+  requestAnimationFrame(() => {
+    viz?.resize();
+    viz?.fitToVisible(false);
+  });
+  console.log('[PacketVerse] load complete. hosts:', model.hosts.size, 'flows:', model.flows.size,
+    'viz container size:', els.sceneContainer3d?.clientWidth, 'x', els.sceneContainer3d?.clientHeight,
+    'active renderer:', vizMode);
   requestAnimationFrame(layoutTopStack);
 }
 
