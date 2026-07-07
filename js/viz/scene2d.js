@@ -169,7 +169,7 @@ export class Scene2D {
   }
 
   fitToVisible(animated = true) {
-    if (!this.positions.size) return this.resetCamera(animated);
+    if (!this.positions.size) return this._resetToDefault(animated);
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const id of this.hosts.keys()) {
       const p = this.positions.get(id);
@@ -177,14 +177,30 @@ export class Scene2D {
       minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
       minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
     }
-    if (!Number.isFinite(minX)) return this.resetCamera(animated);
+    if (!Number.isFinite(minX)) return this._resetToDefault(animated);
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     const spanX = Math.max(80, maxX - minX + 160), spanY = Math.max(80, maxY - minY + 160);
     const zoom = clamp(Math.min(this.w / spanX, this.h / spanY), 0.08, 3);
     this._startFlight(cx, cy, zoom, animated ? 0.7 : 0);
   }
 
-  resetCamera(animated = false) { this.fitToVisible(animated); }
+  /** Frames the whole current graph, or -- when nothing is laid out yet --
+   * a neutral home view. IMPORTANT: this must NOT be implemented by
+   * delegating straight back into fitToVisible(). fitToVisible() already
+   * falls back to a camera reset whenever it has no positions / no finite
+   * bounds, so a resetCamera() that unconditionally called fitToVisible()
+   * created an infinite resetCamera <-> fitToVisible mutual recursion
+   * (RangeError: "Maximum call stack size exceeded") on the very first load,
+   * before any graph had been pushed into the scene yet. */
+  resetCamera(animated = false) {
+    if (this.positions.size) return this.fitToVisible(animated);
+    this._resetToDefault(animated);
+  }
+
+  /** Neutral "home" framing used when there is nothing (finite) to fit. */
+  _resetToDefault(animated = false) {
+    this._startFlight(0, 0, 1, animated ? 0.7 : 0);
+  }
 
   _startFlight(x, y, zoom, duration) {
     if (duration <= 0) { this.cam.x = x; this.cam.y = y; this.cam.zoom = zoom; this._flight = null; return; }

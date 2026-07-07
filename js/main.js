@@ -679,7 +679,20 @@ function refreshViewsInner() {
     const focusHostIds = focus.kind === 'host'
       ? [focus.id]
       : (() => {
-          const f = filteredFlows.get(focus.id) || displayGraph.flows.get(focus.id);
+          // focus.id for a 'flow' focus can arrive in EITHER key space:
+          //  - a RAW model-flow key (from the Inspector packet drill-down's
+          //    "View full conversation", which operates in raw flow space), or
+          //  - an already-DISPLAY key (from clicking a conversation in the
+          //    dashboard / conversations list, which is display space).
+          // When subnet clustering is active these two differ, so looking a
+          // raw key up directly in the (display-keyed) flow maps found
+          // nothing -> no focus hosts -> the whole app narrowed to an empty
+          // set. That is exactly why "View full conversation" rendered
+          // nothing on larger (clustered) captures while "Follow stream"
+          // (which already translated raw->display) still worked. Normalize
+          // to a display key first, then resolve.
+          const displayKey = displayGraph.rawFlowKeyToDisplayKey.get(focus.id) || focus.id;
+          const f = filteredFlows.get(displayKey) || displayGraph.flows.get(displayKey);
           return f ? [f.hostA, f.hostB] : [];
         })();
     const ego = computeEgoNetwork(filteredHosts, filteredFlows, focusHostIds, focus.hops);
