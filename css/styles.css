@@ -163,12 +163,28 @@ button, input { font-family: inherit; }
 
 /* ---------- Floating top filter bar ---------- */
 
-.floating-bar {
+/* .top-stack (the flex column wrapping filter-bar/chips/focus-bar in
+   index.html) is the single source of truth for top-center positioning now
+   -- these bars are normal flow children of it by default, so they can
+   never overlap each other regardless of chip-wrap height, filter-status
+   visibility, etc. A bar only becomes independently `position:absolute`
+   again once the user manually drags it (see .dragged below), at which
+   point it's deliberately floating free at the user's chosen spot. */
+.top-stack {
   position: absolute;
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none; /* the gaps between bars shouldn't block orbit/pan */
+}
+.top-stack > * { pointer-events: auto; }
+
+.floating-bar {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -179,6 +195,13 @@ button, input { font-family: inherit; }
   padding: 6px 8px 6px 16px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
   width: min(680px, 80vw);
+}
+/* A manually-dragged bar opts out of the flex stack entirely and floats
+   independently whereever the user put it (makeDraggable() in main.js sets
+   left/top/right inline once dragging starts). */
+.floating-bar.dragged, .floating-panel.dragged {
+  position: absolute !important;
+  z-index: 200;
 }
 .filter-icon { color: var(--text-dim); font-size: 14px; }
 .filter-input {
@@ -212,11 +235,6 @@ button, input { font-family: inherit; }
 .popover code { background: var(--bg-panel-alt); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
 
 .chip-row-floating {
-  position: absolute;
-  top: 66px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 14;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -535,11 +553,6 @@ button, input { font-family: inherit; }
 /* ---------- Filter status pill (shown under the floating search bar when a filter narrows the view) ---------- */
 
 .filter-status {
-  position: absolute;
-  top: 108px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 14;
   font-size: 11px;
   color: var(--accent);
   background: var(--bg-panel-glass);
@@ -651,12 +664,10 @@ button, input { font-family: inherit; }
    shrinks the breadcrumb to a compact summary), and closeable (\u2715, same
    effect as "Exit focus"). */
 .focus-bar {
-  top: 108px;
   width: min(720px, 86vw);
   padding: 6px 10px;
   border-color: rgba(233, 180, 76, 0.4);
 }
-.focus-bar.dragged { transform: none; }
 .focus-bar-collapsed .focus-breadcrumb { display: none; }
 .focus-bar-collapsed .focus-bar-summary { display: inline; }
 .focus-bar-summary { display: none; color: var(--text-dim); font-size: 12px; flex: 1; }

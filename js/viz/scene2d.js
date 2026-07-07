@@ -152,6 +152,21 @@ export class Scene2D {
   }
   centerOn(id, duration = 0.7) { this.flyToNode(id, duration); }
 
+  /** 2D equivalent of Scene3D's centerOnEdge -- pans/zooms to a flow's
+   * midpoint, or returns false if that edge isn't currently rendered
+   * (e.g. collapsed inside a cluster) so the caller can fall back to a
+   * host-level focus instead of silently doing nothing. */
+  centerOnEdge(key, duration = 0.7) {
+    const f = this.flows.get(key);
+    if (!f) return false;
+    const a = this.positions.get(f.hostA);
+    const b = this.positions.get(f.hostB);
+    if (!a || !b) return false;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    this._startFlight(mid.x, mid.y, Math.max(this.cam.zoom, 1.1), duration);
+    return true;
+  }
+
   fitToVisible(animated = true) {
     if (!this.positions.size) return this.resetCamera(animated);
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;

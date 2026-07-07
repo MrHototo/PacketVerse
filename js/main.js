@@ -130,8 +130,7 @@ function init() {
     onSelectPacket: (entry) => {
       inspector.showPacket(entry);
       revealInspector();
-      const displayKey = displayGraph?.rawFlowKeyToDisplayKey?.get(entry.flowKey);
-      if (displayKey) setPrimaryFocusAll('flow', displayKey);
+      focusFlowVisually(entry.flowKey, entry.frame?.endpointA, entry.frame?.endpointB);
     },
   });
 
@@ -332,38 +331,16 @@ function makeDraggable(panelEl, handleEl, storageKey) {
   });
 }
 
-/** Dynamically stacks the top-center floating bars (filter bar -> protocol
- * chips -> filter-status/focus-bar) directly beneath whatever actually
- * rendered above them, using their real measured height instead of guessed
- * fixed pixel offsets. This is what guarantees the focus/"Expand context"
- * bar can never cover the protocol chips (or vice-versa) regardless of how
- * many chips wrap onto a second line, in any browser window size -- rather
- * than relying on hand-picked offsets that only happen to work sometimes. */
-function layoutTopStack() {
-  const filterBar = document.getElementById('filter-bar');
-  if (!filterBar) return;
-  const viewer = document.getElementById('viewer');
-  const viewerTop = viewer.getBoundingClientRect().top;
-  let y = filterBar.getBoundingClientRect().bottom - viewerTop + 8;
-
-  const chipRow = els.presets;
-  if (chipRow && chipRow.children.length && getComputedStyle(chipRow).display !== 'none') {
-    chipRow.style.top = `${y}px`;
-    y = chipRow.getBoundingClientRect().bottom - viewerTop + 8;
-  }
-
-  if (els.filterStatus && !els.filterStatus.classList.contains('hidden')) {
-    els.filterStatus.style.top = `${y}px`;
-    y = els.filterStatus.getBoundingClientRect().bottom - viewerTop + 8;
-  }
-
-  // A manually-dragged focus bar has opted out of auto-stacking -- leave it
-  // wherever the user put it instead of snapping it back every render.
-  if (els.focusBar && !els.focusBar.classList.contains('hidden') && !els.focusBar.classList.contains('dragged')) {
-    els.focusBar.style.top = `${y}px`;
-  }
-}
-window.addEventListener('resize', () => layoutTopStack());
+/** Historically this measured and hand-stacked the top-center bars with
+ * JS-computed pixel offsets. That approach was fragile (it required every
+ * caller to remember to re-run it after anything that could change a
+ * bar's height) and was the root cause of the filter-bar/chip-row/focus-bar
+ * overlap bugs reported in practice. It's been replaced by a real CSS flex
+ * column (#top-stack in index.html + .top-stack in styles.css), which
+ * stacks these bars correctly *by construction* with zero JS involvement --
+ * so this function is now a deliberate no-op, kept only so its (now historical)
+ * call sites elsewhere don't need to be hunted down and removed one by one. */
+function layoutTopStack() { /* no-op: see comment above */ }
 
 function togglePanel(side, persist = true, forceCollapsed = null) {
   const drawer = side === 'left' ? els.sidebarLeft : els.sidebarRight;
@@ -485,6 +462,38 @@ function setGraphAll(hosts, flows) {
 function setPrimaryFocusAll(kind, id) {
   scene3d?.setPrimaryFocus(kind, id);
   scene2d?.setPrimaryFocus(kind, id);
+}
+
+/** The single, correct way to visually focus a flow from anywhere in the
+ * app (packet list, "View full conversation", clicking a conversation in
+ * the dashboard, etc). Packets and the Inspector operate in RAW flow-key
+ * space, but the 3D/2D scenes render DISPLAY-space edges -- these differ
+ * whenever subnet clustering is active, so a raw key must be translated
+ * before it means anything to the scene. If the flow's edge isn't
+ * currently rendered at all (most commonly: both endpoints are collapsed
+ * into the same subnet cluster, so it's "internal" traffic hidden by
+ * design), this falls back to highlighting the cluster/host node at
+ * either end instead of silently doing nothing -- every click now visibly
+ * reacts to something, and the camera always moves toward it. */
+function focusFlowVisually(rawOrDisplayKey, hostAId, hostBId) {
+  if (!displayGraph || !rawOrDisplayKey) return;
+  const displayKey = displayGraph.rawFlowKeyToDisplayKey.get(rawOrDisplayKey) || rawOrDisplayKey;
+  if (displayGraph.flows.has(displayKey)) {
+    setPrimaryFocusAll('flow', displayKey);
+    scene3d?.centerOnEdge(displayKey);
+    scene2d?.centerOnEdge(displayKey);
+    return;
+  }
+  const a = hostAId != null ? displayGraph.hostToDisplayId?.get(hostAId) : null;
+  const b = hostBId != null ? displayGraph.hostToDisplayId?.get(hostBId) : null;
+  const targetHost = (a && displayGraph.hosts.has(a)) ? a : (b && displayGraph.hosts.has(b)) ? b : null;
+  if (targetHost) {
+    setPrimaryFocusAll('host', targetHost);
+    scene3d?.centerOn(targetHost);
+    scene2d?.centerOn(targetHost);
+  } else {
+    clearPrimaryFocusAll();
+  }
 }
 function clearPrimaryFocusAll() {
   scene3d?.clearPrimaryFocus();
@@ -646,7 +655,12 @@ function refreshViews() {
 function pushFocus(entry) {
   focusStack.push(entry);
   refreshViews();
-  setPrimaryFocusAll(entry.kind, entry.id);
+  if (entry.kind === 'flow') {
+    const rawFlow = model?.flows.get(entry.id);
+    focusFlowVisually(entry.id, rawFlow?.hostA, rawFlow?.hostB);
+  } else {
+    setPrimaryFocusAll(entry.kind, entry.id);
+  }
   viz.fitToVisible();
   const host = displayGraph?.hosts.get(entry.kind === 'host' ? entry.id : '');
   if (entry.kind === 'host' && host) { inspector.showHost(host); revealInspector(); }

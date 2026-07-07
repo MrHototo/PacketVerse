@@ -327,6 +327,31 @@ export class Scene3D {
    * renderer identically. */
   centerOn(id, duration = 0.9) { this.flyToNode(id, duration); }
 
+  /** Flies to the midpoint of a specific flow/edge (by display key), falling
+   * back to whichever single endpoint is actually present in the current
+   * scene if the edge itself isn't rendered right now (e.g. it's currently
+   * collapsed inside a subnet cluster) -- so selecting a packet/conversation
+   * always visibly moves the camera toward it, never silently does nothing. */
+  centerOnEdge(key, duration = 0.9) {
+    const entry = this.edgeLines.get(key);
+    if (entry && this.layout) {
+      const a = this.layout.get(entry.flow.hostA);
+      const b = this.layout.get(entry.flow.hostB);
+      if (a && b) {
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+        const dir = new THREE.Vector3(0.35, 0.5, 1).normalize();
+        const dist = 70;
+        this._startFlight(
+          new THREE.Vector3(mid.x + dir.x * dist, mid.y + dir.y * dist, mid.z + dir.z * dist),
+          new THREE.Vector3(mid.x, mid.y, mid.z),
+          duration
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
   _startFlight(camTarget, orbitTarget, duration) {
     this._flight = {
       t: 0,

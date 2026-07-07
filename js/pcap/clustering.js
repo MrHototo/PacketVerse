@@ -26,7 +26,8 @@ function subnetKeyFor(hostId, host) {
 export function computeDisplayGraph(hosts, flows, expanded = new Set(), threshold = DEFAULT_THRESHOLD) {
   if (hosts.size <= threshold) {
     const identity = new Map([...flows.keys()].map((k) => [k, k]));
-    return { hosts, flows, clusters: new Map(), clustered: false, rawFlowKeyToDisplayKey: identity };
+    const hostIdentity = new Map([...hosts.keys()].map((k) => [k, k]));
+    return { hosts, flows, clusters: new Map(), clustered: false, rawFlowKeyToDisplayKey: identity, hostToDisplayId: hostIdentity };
   }
 
   const hostToCluster = new Map(); // hostId -> clusterKey (only if collapsed)
@@ -115,7 +116,10 @@ export function computeDisplayGraph(hosts, flows, expanded = new Set(), threshol
     if (a !== flow.hostA || b !== flow.hostB) merged.aggregated = true;
   }
 
-  return { hosts: displayHosts, flows: displayFlows, clusters, clustered: true, rawFlowKeyToDisplayKey };
+  const hostToDisplayId = new Map();
+  for (const hostId of hosts.keys()) hostToDisplayId.set(hostId, hostToCluster.get(hostId) || hostId);
+
+  return { hosts: displayHosts, flows: displayFlows, clusters, clustered: true, rawFlowKeyToDisplayKey, hostToDisplayId };
 }
 
 export { DEFAULT_THRESHOLD };

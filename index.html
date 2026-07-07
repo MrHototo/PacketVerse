@@ -65,16 +65,39 @@
         <button id="viz-mode-2d-btn" class="viz-mode-btn" data-mode="2d">▦ 2D</button>
       </div>
 
-      <!-- Floating top-center filter bar (Google Maps search-bar style) -->
-      <div id="filter-bar" class="floating-bar">
-        <span class="filter-icon">⌕</span>
-        <input id="search-input" type="text" class="filter-input"
-               placeholder='Filter traffic — try: tls &amp;&amp; tcp.port==853, dns.qry.name==example.com, tcp.flags.syn==1 ...' />
-        <button id="filter-help-btn" class="btn btn-icon" title="Filter syntax help">?</button>
-        <button id="fit-filtered-btn" class="btn btn-ghost" title="Reframe the camera on only what's currently shown">Fit to filtered</button>
-        <button id="clear-filter-btn" class="btn btn-ghost">Clear</button>
-      </div>
-      <div id="filter-status" class="filter-status hidden"></div>
+      <!-- Floating top-center stack: filter bar, protocol chips, filter
+           status, and the focus breadcrumb all live in one flex column
+           (#top-stack) so they can never overlap each other by
+           construction -- no JS-measured pixel offsets required. Dragging
+           the focus bar (see makeDraggable() in main.js) pulls it out of
+           this flow via position:absolute, at which point the remaining
+           items simply reflow to fill the gap. -->
+      <div id="top-stack" class="top-stack">
+        <div id="filter-bar" class="floating-bar">
+          <span class="filter-icon">⌕</span>
+          <input id="search-input" type="text" class="filter-input"
+                 placeholder='Filter traffic — try: tls &amp;&amp; tcp.port==853, dns.qry.name==example.com, tcp.flags.syn==1 ...' />
+          <button id="filter-help-btn" class="btn btn-icon" title="Filter syntax help">?</button>
+          <button id="fit-filtered-btn" class="btn btn-ghost" title="Reframe the camera on only what's currently shown">Fit to filtered</button>
+          <button id="clear-filter-btn" class="btn btn-ghost">Clear</button>
+        </div>
+        <div id="filter-status" class="filter-status hidden"></div>
+        <div class="chip-row-floating" id="preset-chips"></div>
+
+        <!-- Focus / ego-network breadcrumb — appears once the user clicks into a node,
+             showing the drill-down path and letting them expand outward or exit back
+             to the full (filtered) graph, graph-database-traversal style. -->
+        <div id="focus-bar" class="floating-bar focus-bar hidden">
+          <span class="filter-icon drag-handle" id="focus-bar-handle" title="Drag to move">⌖</span>
+          <div id="focus-breadcrumb" class="focus-breadcrumb"></div>
+          <span id="focus-bar-summary" class="focus-bar-summary"></span>
+          <button id="expand-focus-btn" class="btn btn-ghost" title="Reveal one more hop of context outward">+ Expand context</button>
+          <button id="exit-focus-btn" class="btn btn-ghost">Exit focus — show all</button>
+          <button id="collapse-focus-btn" class="btn btn-icon" title="Collapse to a compact bar">⌄</button>
+          <button id="close-focus-btn" class="btn btn-icon" title="Close (same as Exit focus)">✕</button>
+        </div>
+      </div><!-- /#top-stack -->
+
       <div id="filter-help-popover" class="popover hidden">
         <h4>Filter syntax</h4>
         <p class="hint">A real implementation of Wireshark's own display-filter grammar — not a fixed list of examples. Full reference: <a href="docs/FILTER_SYNTAX.md" target="_blank" rel="noopener">docs/FILTER_SYNTAX.md</a>. Matching traffic is shown everywhere (3D/2D view, packet list, dashboard); everything else is hidden.</p>
@@ -95,20 +118,6 @@
         <p class="hint">Plain text with no operators falls back to a simple substring search. Press Enter to snap the camera to the filtered results.</p>
       </div>
 
-      <div class="chip-row-floating" id="preset-chips"></div>
-
-      <!-- Focus / ego-network breadcrumb — appears once the user clicks into a node,
-           showing the drill-down path and letting them expand outward or exit back
-           to the full (filtered) graph, graph-database-traversal style. -->
-      <div id="focus-bar" class="floating-bar focus-bar hidden">
-        <span class="filter-icon drag-handle" id="focus-bar-handle" title="Drag to move">⌖</span>
-        <div id="focus-breadcrumb" class="focus-breadcrumb"></div>
-        <span id="focus-bar-summary" class="focus-bar-summary"></span>
-        <button id="expand-focus-btn" class="btn btn-ghost" title="Reveal one more hop of context outward">+ Expand context</button>
-        <button id="exit-focus-btn" class="btn btn-ghost">Exit focus — show all</button>
-        <button id="collapse-focus-btn" class="btn btn-icon" title="Collapse to a compact bar">⌄</button>
-        <button id="close-focus-btn" class="btn btn-icon" title="Close (same as Exit focus)">✕</button>
-      </div>
 
       <!-- Floating zoom / camera controls, bottom-right -->
       <div id="zoom-controls" class="zoom-controls">
