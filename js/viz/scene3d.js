@@ -136,7 +136,19 @@ export class Scene3D {
 
   setParticlesEnabled(enabled) {
     this.particlesEnabled = enabled;
+    // Re-apply current focus/dim state so particle visibility is recomputed
+    // immediately using the new flag -- reuses the exact same per-edge logic
+    // setPrimaryFocus already uses, so there's only one place this is decided.
     this._applyVisualState();
+  }
+
+  /** Re-derives per-edge/per-node visual state (particle visibility, opacity,
+   * emissive intensity) from current `particlesEnabled` + `primaryFocus`,
+   * without changing what focus is active. Called whenever a toggle changes
+   * (e.g. the "Flow animation" checkbox) so the effect is immediate instead
+   * of only taking effect on the next selection change. */
+  _applyVisualState() {
+    this.setPrimaryFocus(this.primaryFocus?.kind ?? null, this.primaryFocus?.id ?? null);
   }
 
   /** Dolly the camera toward/away from the current orbit target (Google-Maps-style +/- zoom). */
@@ -252,6 +264,12 @@ export class Scene3D {
       this.adjacency.get(flow.hostA)?.add(flow.key);
       this.adjacency.get(flow.hostB)?.add(flow.key);
     }
+
+    // Newly-created particle meshes default to visible=true -- reconcile them
+    // with whatever the user currently has toggled (Flow animation checkbox)
+    // and whatever focus is active, instead of silently re-enabling animation
+    // on every filter/focus rebuild.
+    this._applyVisualState();
   }
 
   /** Cosmetic-only emphasis: everything currently in the scene has already

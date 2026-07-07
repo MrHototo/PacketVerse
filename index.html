@@ -101,10 +101,13 @@
            showing the drill-down path and letting them expand outward or exit back
            to the full (filtered) graph, graph-database-traversal style. -->
       <div id="focus-bar" class="floating-bar focus-bar hidden">
-        <span class="filter-icon">⌖</span>
+        <span class="filter-icon drag-handle" id="focus-bar-handle" title="Drag to move">⌖</span>
         <div id="focus-breadcrumb" class="focus-breadcrumb"></div>
+        <span id="focus-bar-summary" class="focus-bar-summary"></span>
         <button id="expand-focus-btn" class="btn btn-ghost" title="Reveal one more hop of context outward">+ Expand context</button>
         <button id="exit-focus-btn" class="btn btn-ghost">Exit focus — show all</button>
+        <button id="collapse-focus-btn" class="btn btn-icon" title="Collapse to a compact bar">⌄</button>
+        <button id="close-focus-btn" class="btn btn-icon" title="Close (same as Exit focus)">✕</button>
       </div>
 
       <!-- Floating zoom / camera controls, bottom-right -->
@@ -115,12 +118,19 @@
       </div>
 
       <!-- Floating scene action bar, bottom-left -->
-      <div id="scene-controls" class="floating-panel scene-controls-panel">
-        <button id="clear-focus-btn" class="btn btn-ghost">Clear selection</button>
-        <button id="expand-all-btn" class="btn btn-ghost">Expand all subnets</button>
-        <button id="collapse-all-btn" class="btn btn-ghost">Collapse subnets</button>
-        <label class="btn btn-ghost checkbox-btn"><input type="checkbox" id="toggle-labels" checked /> Labels</label>
-        <label class="btn btn-ghost checkbox-btn"><input type="checkbox" id="toggle-particles" checked /> Flow animation</label>
+      <div id="scene-controls" class="floating-panel scene-controls-panel scene-controls-collapsed">
+        <div class="panel-header" id="scene-controls-header">
+          <span class="drag-handle" id="scene-controls-handle" title="Drag to move">∷</span>
+          <span class="panel-header-title">Scene options</span>
+          <button id="scene-controls-collapse-btn" class="btn btn-icon" title="Expand/collapse">⌄</button>
+        </div>
+        <div class="panel-body" id="scene-controls-body">
+          <button id="clear-focus-btn" class="btn btn-ghost">Clear selection</button>
+          <button id="expand-all-btn" class="btn btn-ghost">Expand all subnets</button>
+          <button id="collapse-all-btn" class="btn btn-ghost">Collapse subnets</button>
+          <label class="btn btn-ghost checkbox-btn"><input type="checkbox" id="toggle-labels" checked /> Labels</label>
+          <label class="btn btn-ghost checkbox-btn"><input type="checkbox" id="toggle-particles" checked /> Flow animation</label>
+        </div>
       </div>
 
       <!-- Panel collapse tabs -->

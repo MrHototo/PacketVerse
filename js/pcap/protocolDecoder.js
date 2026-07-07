@@ -557,10 +557,16 @@ function buildSummary(layers, tags) {
       : `DNS query for ${d.name || '?'} (${d.queryType || ''})`;
   }
   if (layers.l7?.type === 'TLS') {
-    return `TLS ${layers.l7.handshakeType}${layers.l7.serverName ? ' to ' + layers.l7.serverName : ''}`;
+    const t = layers.l7;
+    // Most TLS packets in a real session are ApplicationData/Alert/ChangeCipherSpec
+    // records with no handshakeType at all -- fall back to the record's own content
+    // type name instead of printing the literal string "null".
+    const label = t.handshakeType || (t.contentTypes && t.contentTypes.length ? t.contentTypes.join('+') : 'Record');
+    return `TLS ${label}${t.serverName ? ' to ' + t.serverName : ''}`;
   }
   if (layers.l7?.type === 'HTTP') {
-    return `HTTP ${layers.l7.method}`;
+    const h = layers.l7;
+    return h.isRequest ? `HTTP ${h.method || 'request'} ${h.path || ''}`.trim() : `HTTP response${h.statusCode ? ' ' + h.statusCode : ''}`;
   }
   if (layers.l3?.type === 'ARP') {
     return `ARP ${layers.l3.op} — who has ${layers.l3.targetIp}?`;

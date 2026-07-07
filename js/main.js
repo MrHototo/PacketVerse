@@ -87,8 +87,15 @@ const els = {
   filterStatus: document.getElementById('filter-status'),
   focusBar: document.getElementById('focus-bar'),
   focusBreadcrumb: document.getElementById('focus-breadcrumb'),
+  focusBarSummary: document.getElementById('focus-bar-summary'),
+  focusBarHandle: document.getElementById('focus-bar-handle'),
   expandFocusBtn: document.getElementById('expand-focus-btn'),
   exitFocusBtn: document.getElementById('exit-focus-btn'),
+  collapseFocusBtn: document.getElementById('collapse-focus-btn'),
+  closeFocusBtn: document.getElementById('close-focus-btn'),
+  sceneControls: document.getElementById('scene-controls'),
+  sceneControlsHandle: document.getElementById('scene-controls-handle'),
+  sceneControlsCollapseBtn: document.getElementById('scene-controls-collapse-btn'),
 };
 
 let model = null;
@@ -122,6 +129,7 @@ function init() {
   packetList = new PacketList(els.packetListContainer, {
     onSelectPacket: (entry) => {
       inspector.showPacket(entry);
+      revealInspector();
       const displayKey = displayGraph?.rawFlowKeyToDisplayKey?.get(entry.flowKey);
       if (displayKey) setPrimaryFocusAll('flow', displayKey);
     },
@@ -172,9 +180,35 @@ function init() {
   els.resetViewBtn?.addEventListener('click', () => viz?.resetCamera(true));
   els.clearFocusBtn?.addEventListener('click', () => exitFocus());
   els.exitFocusBtn?.addEventListener('click', () => exitFocus());
+  els.closeFocusBtn?.addEventListener('click', () => exitFocus());
   els.expandFocusBtn?.addEventListener('click', () => expandFocus());
   els.toggleLabels?.addEventListener('change', (e) => { scene3d?.setLabelsVisible(e.target.checked); scene2d?.setLabelsVisible(e.target.checked); });
   els.toggleParticles?.addEventListener('change', (e) => { scene3d?.setParticlesEnabled(e.target.checked); scene2d?.setParticlesEnabled(e.target.checked); });
+
+  // Focus bar: collapsible (chevron -> compact one-line summary) and
+  // draggable (via its \u2316 handle) -- see makeDraggable()/layoutTopStack()
+  // above. Close (\u2715) is equivalent to "Exit focus", just reachable
+  // without reading the button label.
+  const focusCollapsedPref = localStorage.getItem('pv_focusBarCollapsed') === 'true';
+  els.focusBar?.classList.toggle('focus-bar-collapsed', focusCollapsedPref);
+  els.collapseFocusBtn?.addEventListener('click', () => {
+    const collapsed = els.focusBar.classList.toggle('focus-bar-collapsed');
+    els.collapseFocusBtn.classList.toggle('pressed', collapsed);
+    localStorage.setItem('pv_focusBarCollapsed', String(collapsed));
+    if (!collapsed) requestAnimationFrame(layoutTopStack);
+  });
+  makeDraggable(els.focusBar, els.focusBarHandle, 'pv_focusBarPos');
+
+  // Scene-options panel: collapsible (defaults to collapsed so it never
+  // competes for attention on load) and draggable via its header.
+  const sceneCollapsedPref = localStorage.getItem('pv_sceneControlsCollapsed');
+  const sceneCollapsed = sceneCollapsedPref === null ? true : sceneCollapsedPref === 'true';
+  els.sceneControls?.classList.toggle('scene-controls-collapsed', sceneCollapsed);
+  els.sceneControlsCollapseBtn?.addEventListener('click', () => {
+    const collapsed = els.sceneControls.classList.toggle('scene-controls-collapsed');
+    localStorage.setItem('pv_sceneControlsCollapsed', String(collapsed));
+  });
+  makeDraggable(els.sceneControls, els.sceneControlsHandle, 'pv_sceneControlsPos');
 
   els.vizMode3dBtn?.addEventListener('click', () => setVizMode('3d'));
   els.vizMode2dBtn?.addEventListener('click', () => setVizMode('2d'));
@@ -232,6 +266,105 @@ els.renderErrorDismiss?.addEventListener('click', () => {
  * open/closed preference (user-initiated clicks do; the one-time startup
  * default-collapse call does not, or every fresh session would just
  * silently overwrite whatever the user chose last time before it's read). */
+/** Auto-reveals the right-hand Inspector drawer whenever the user actively
+ * selects/drills into something (packet row, graph node/edge, focus push) --
+ * without this, a first-time visitor whose drawer starts collapsed (see the
+ * default-collapsed logic below) can click a packet and see literally nothing
+ * happen, because the Inspector's content *did* update, just off-screen.
+ * Deliberately does not persist the change to localStorage: it is a
+ * temporary "show me what I just asked for" reveal, not a change to the
+ * user's remembered open/closed preference, so an explicit close afterwards
+ * is still respected next time they load the app. */
+function revealInspector() {
+  if (els.sidebarRight?.classList.contains('panel-collapsed')) {
+    togglePanel('right', false, false);
+  }
+}
+
+/** Makes `panelEl` draggable by pointer-dragging `handleEl`, clamped to stay
+ * fully within the viewport, and remembers the chosen position across
+ * sessions under `storageKey`. Used for the floating Scene-options and Focus
+ * panels so the user can move either one out of the way of anything else on
+ * screen, on top of the automatic non-overlapping defaults below. */
+function makeDraggable(panelEl, handleEl, storageKey) {
+  if (!panelEl || !handleEl) return;
+  const saved = localStorage.getItem(storageKey);
+  if (saved) {
+    try {
+      const { left, top } = JSON.parse(saved);
+      panelEl.style.left = `${left}px`;
+      panelEl.style.top = `${top}px`;
+      panelEl.style.right = 'auto';
+      panelEl.style.transform = 'none';
+      panelEl.classList.add('dragged');
+    } catch { /* ignore malformed saved position */ }
+  }
+
+  let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+  handleEl.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    handleEl.setPointerCapture(e.pointerId);
+    const rect = panelEl.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY;
+    startLeft = rect.left; startTop = rect.top;
+    panelEl.style.transform = 'none';
+    e.preventDefault();
+  });
+  handleEl.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const parentRect = panelEl.offsetParent?.getBoundingClientRect() || { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    let left = startLeft + (e.clientX - startX) - parentRect.left;
+    let top = startTop + (e.clientY - startY) - parentRect.top;
+    const maxLeft = parentRect.width - panelEl.offsetWidth - 4;
+    const maxTop = parentRect.height - panelEl.offsetHeight - 4;
+    left = Math.max(4, Math.min(left, Math.max(4, maxLeft)));
+    top = Math.max(4, Math.min(top, Math.max(4, maxTop)));
+    panelEl.style.left = `${left}px`;
+    panelEl.style.top = `${top}px`;
+    panelEl.style.right = 'auto';
+    panelEl.classList.add('dragged');
+  });
+  handleEl.addEventListener('pointerup', (e) => {
+    if (!dragging) return;
+    dragging = false;
+    try { handleEl.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    localStorage.setItem(storageKey, JSON.stringify({ left: parseFloat(panelEl.style.left), top: parseFloat(panelEl.style.top) }));
+  });
+}
+
+/** Dynamically stacks the top-center floating bars (filter bar -> protocol
+ * chips -> filter-status/focus-bar) directly beneath whatever actually
+ * rendered above them, using their real measured height instead of guessed
+ * fixed pixel offsets. This is what guarantees the focus/"Expand context"
+ * bar can never cover the protocol chips (or vice-versa) regardless of how
+ * many chips wrap onto a second line, in any browser window size -- rather
+ * than relying on hand-picked offsets that only happen to work sometimes. */
+function layoutTopStack() {
+  const filterBar = document.getElementById('filter-bar');
+  if (!filterBar) return;
+  const viewer = document.getElementById('viewer');
+  const viewerTop = viewer.getBoundingClientRect().top;
+  let y = filterBar.getBoundingClientRect().bottom - viewerTop + 8;
+
+  const chipRow = els.presets;
+  if (chipRow && chipRow.children.length && getComputedStyle(chipRow).display !== 'none') {
+    chipRow.style.top = `${y}px`;
+    y = chipRow.getBoundingClientRect().bottom - viewerTop + 8;
+  }
+
+  if (els.filterStatus && !els.filterStatus.classList.contains('hidden')) {
+    els.filterStatus.style.top = `${y}px`;
+    y = els.filterStatus.getBoundingClientRect().bottom - viewerTop + 8;
+  }
+
+  // A manually-dragged focus bar has opted out of auto-stacking -- leave it
+  // wherever the user put it instead of snapping it back every render.
+  if (els.focusBar && !els.focusBar.classList.contains('hidden') && !els.focusBar.classList.contains('dragged')) {
+    els.focusBar.style.top = `${y}px`;
+  }
+}
+window.addEventListener('resize', () => layoutTopStack());
+
 function togglePanel(side, persist = true, forceCollapsed = null) {
   const drawer = side === 'left' ? els.sidebarLeft : els.sidebarRight;
   const tab = side === 'left' ? els.toggleLeftPanel : els.toggleRightPanel;
@@ -311,6 +444,7 @@ function finishLoad(rawPackets, decoded, label) {
 
   rebuildGraph();
   viz.resetCamera(false);
+  requestAnimationFrame(layoutTopStack);
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +628,10 @@ function refreshViews() {
     onSelectHost: (hostId) => pushFocus({ kind: 'host', id: hostId, hops: 1 }),
   });
   renderNameResolution(els.namesPanel, model.nameTable);
+  // Re-stack the floating top-center bars now that filter-status/focus-bar
+  // visibility (and the chip row's wrap height) may have just changed, so
+  // nothing floating above ever ends up covering something below it.
+  requestAnimationFrame(layoutTopStack);
 }
 
 // ---------------------------------------------------------------------------
@@ -511,10 +649,10 @@ function pushFocus(entry) {
   setPrimaryFocusAll(entry.kind, entry.id);
   viz.fitToVisible();
   const host = displayGraph?.hosts.get(entry.kind === 'host' ? entry.id : '');
-  if (entry.kind === 'host' && host) inspector.showHost(host);
+  if (entry.kind === 'host' && host) { inspector.showHost(host); revealInspector(); }
   else if (entry.kind === 'flow') {
     const flow = displayGraph?.flows.get(entry.id);
-    if (flow) inspector.showFlow(flow);
+    if (flow) { inspector.showFlow(flow); revealInspector(); }
   }
 }
 
@@ -598,10 +736,12 @@ function selectObject(userData) {
     setPrimaryFocusAll('host', userData.id);
     viz.centerOn(userData.id);
     inspector.showHost(userData.host);
+    revealInspector();
   } else if (userData.kind === 'flow') {
     setPrimaryFocusAll('flow', userData.key);
     viz.centerOn(userData.flow.hostA);
     inspector.showFlow(userData.flow);
+    revealInspector();
   }
 }
 
@@ -640,6 +780,13 @@ function renderFocusBar() {
       else popFocusTo(idx);
     });
   });
+  // Compact one-line summary shown instead of the full breadcrumb when the
+  // bar is collapsed (see collapse-focus-btn below).
+  if (els.focusBarSummary) {
+    const top = focusStack[focusStack.length - 1];
+    const label = top.kind === 'host' ? shortenLabel(top.id) : top.kind === 'stream' ? `Stream: ${flowLabel(top.id)}` : flowLabel(top.id);
+    els.focusBarSummary.textContent = `\u2316 Focused on ${label}${focusStack.length > 1 ? ` (+${focusStack.length - 1} more)` : ''}`;
+  }
 }
 
 function shortenLabel(id) {
