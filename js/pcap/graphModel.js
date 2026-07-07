@@ -57,6 +57,16 @@ export function buildGraphModel(rawPackets, decodedFrames) {
     if (streamIndexOf.has(flow.key)) flow.streamIndex = streamIndexOf.get(flow.key);
   }
 
+  // frame.time_relative / frame.time_delta (Wireshark's own semantics: relative to the
+  // first captured frame, and delta from the immediately preceding frame overall).
+  const t0 = firstTs === Infinity ? 0 : firstTs;
+  let prevTs = null;
+  for (const p of packets) {
+    p.frameTimeRelative = p.ts - t0;
+    p.frameTimeDelta = prevTs == null ? 0 : p.ts - prevTs;
+    prevTs = p.ts;
+  }
+
   return {
     hosts,
     flows,

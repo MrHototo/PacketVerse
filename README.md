@@ -41,16 +41,29 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
   **freezes** once settled, so nodes stop moving entirely and stay stationary
   until the *data* changes (a filter, a focus, an expand/collapse) — orbiting,
   panning, or zooming the camera never reheats it.
-* **Wireshark-style display filter engine** — a real recursive-descent parser
-  supporting `and`/`or`/`not`/`&&`/`||`/`!`, parentheses, comparisons
-  (`==`, `!=`, `>`, `<`), `contains`, `matches`/`~` regex, and `in {a, b, c}`
-  set membership, across 60+ protocol-scoped fields (`tcp.port`, `dns.qry.name`,
-  `tls.handshake.ciphersuite`, `tcp.analysis.retransmission`, `http.response.code`,
-  `tcp.stream`, and more — see the `?` syntax cheatsheet). Filtering is a true
-  **rebuild**, not a dim/hide overlay: the 3D scene, packet list, dashboard,
-  and every statistics tab are recomputed from exactly the matching subset, so
-  "investigate this traffic" genuinely narrows the whole app at once. Plain
-  text with no operators falls back to a substring search.
+* **A genuine Wireshark display-filter grammar** — not a hardcoded list of
+  example filters. A real tokenizer + recursive-descent parser implements
+  `and`/`or`/`xor`/`not` (and `&&`/`||`/`!`) with correct precedence and
+  parentheses; the full comparison set (`==`/`eq`, `!=`/`ne`, `>`/`gt`,
+  `<`/`lt`, `>=`/`ge`, `<=`/`le`) plus `any`/`all` quantifiers for repeating
+  fields; `contains`; `matches`/`~` regex (case-insensitive by default,
+  `(?-i)` for case-sensitive); `in {a, b, c..d}` membership with numeric/IP
+  ranges; CIDR matching (`ip.addr == 10.0.0.0/24`); hex/octal/binary/char
+  literals; MAC/byte-sequence literals; the slice operator
+  (`eth.src[0:3] == 00:11:22`); bitwise AND (`tcp.flags & 0x02`); and
+  functions (`upper()`, `lower()`, `len()`, `vals()`, `dec()`, `hex()`,
+  `ip_rfc1918()`, and more). Every operator is fully generic and type-driven
+  against a declarative field registry (`js/pcap/fieldRegistry.js`) covering
+  70+ protocol-scoped fields — adding a new field automatically gets every
+  operator for free, rather than special-casing filters one at a time. See
+  [`docs/FILTER_SYNTAX.md`](docs/FILTER_SYNTAX.md) for the full reference,
+  including the explicit (documented, not silent) exclusions: macros, field
+  references, arithmetic operators, and the layer/raw operators. Filtering is
+  a true **rebuild**, not a dim/hide overlay: the 3D scene, packet list,
+  dashboard, and every statistics tab are recomputed from exactly the
+  matching subset. Plain text with no operators falls back to a substring
+  search, and any unrecognized-but-plausible field gracefully degrades to a
+  protocol-presence test instead of always failing.
 * **Wireshark-style packet list** — a sortable No./Time/Source/Destination/
   Protocol/Length/Info table that always reflects the current filter and time
   range; click any row to open that exact packet in the Inspector and jump

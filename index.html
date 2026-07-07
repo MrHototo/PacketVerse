@@ -77,26 +77,20 @@
       <div id="filter-status" class="filter-status hidden"></div>
       <div id="filter-help-popover" class="popover hidden">
         <h4>Filter syntax</h4>
-        <p class="hint">Filters are evaluated per-packet, like Wireshark's display filter — matching traffic is shown everywhere (3D view, packet list, dashboard) and everything else is hidden.</p>
+        <p class="hint">A real implementation of Wireshark's own display-filter grammar — not a fixed list of examples. Full reference: <a href="docs/FILTER_SYNTAX.md" target="_blank" rel="noopener">docs/FILTER_SYNTAX.md</a>. Matching traffic is shown everywhere (3D/2D view, packet list, dashboard); everything else is hidden.</p>
         <ul>
-          <li><code>dns</code>, <code>tls</code>, <code>arp</code> — bare protocol / tag match</li>
-          <li><code>ip.addr==10.0.0.5</code> · <code>ip.src==</code> / <code>ip.dst==</code></li>
-          <li><code>eth.src==</code> / <code>eth.dst==</code> — MAC address</li>
-          <li><code>tcp.port==443</code>, <code>udp.port==53</code> (protocol-scoped)</li>
-          <li><code>tcp.flags.syn==1</code>, <code>tcp.flags.ack==1</code>, <code>tcp.flags.rst==1</code></li>
-          <li><code>dns.qry.name==example.com</code>, <code>dns.qry.type==AAAA</code></li>
-          <li><code>tls.handshake.extensions_server_name ~ /example/</code>, <code>tls.record.version</code></li>
-          <li><code>http.request.method==GET</code></li>
-          <li><code>vlan.id==10</code>, <code>icmp.type==8</code></li>
-          <li><code>bytes>10000</code>, <code>packets>50</code>, <code>duration>5</code></li>
-          <li><code>ip.addr ~ /^10\./</code> — regex match</li>
-          <li><code>dns and udp.port==53</code>, <code>(tls or http) and bytes>1000</code></li>
-          <li><code>not arp</code>, <code>!broadcast</code></li>
-          <li><code>http.request.uri contains "login"</code> — substring match</li>
-          <li><code>ip.addr matches "^10\\."</code> — <code>matches</code> is an alias for <code>~</code></li>
-          <li><code>tcp.dstport in {80, 443, 8443}</code> — set membership</li>
-          <li><code>tcp.analysis.retransmission</code>, <code>tcp.analysis.duplicate_ack</code>, <code>tcp.stream==2</code></li>
-          <li><code>tls.handshake.ciphersuite</code>, <code>tls.cert.subject</code>, <code>http.host</code>, <code>http.response.code==404</code></li>
+          <li><b>Existence:</b> <code>dns</code>, <code>tls</code>, <code>arp</code>, <code>tls.handshake</code>, <code>dns.cname</code> — bare protocol/field presence</li>
+          <li><b>Comparison:</b> <code>==</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code> or <code>eq ne gt lt ge le</code>; quantify repeating fields with <code>any</code>/<code>all</code>: <code>all tcp.port &gt; 1024</code></li>
+          <li><b>Search:</b> <code>http.request.uri contains "login"</code> · <code>dns.qry.name matches "^www\."</code> (or <code>~</code>) — regex, case-insensitive by default, use <code>(?-i)</code> for case-sensitive</li>
+          <li><b>Membership + ranges:</b> <code>tcp.port in {80, 443, 8443}</code> · <code>tcp.port in {443, 4430..4434}</code> · <code>ip.addr in {10.0.0.1..10.0.0.9}</code></li>
+          <li><b>CIDR:</b> <code>ip.addr == 10.0.0.0/24</code>, <code>ipv6.addr == 2001:db8::/32</code></li>
+          <li><b>Logic:</b> <code>and</code>/<code>&amp;&amp;</code>, <code>or</code>/<code>||</code>, <code>xor</code>, <code>not</code>/<code>!</code>, parentheses — precedence: not &gt; and &gt; xor &gt; or</li>
+          <li><b>Bitwise AND:</b> <code>tcp.flags &amp; 0x02</code> — true when the SYN bit is set</li>
+          <li><b>Slices:</b> <code>eth.src[0:3] == 00:11:22</code>, <code>frame[-4:]</code>, <code>field[1,3-5,9:]</code></li>
+          <li><b>Literals:</b> hex <code>0x</code>, binary <code>0b</code>, octal <code>012</code>, MAC/byte sequences <code>aa:bb:cc</code>, raw strings <code>r"..."</code></li>
+          <li><b>Functions:</b> <code>upper()</code> <code>lower()</code> <code>len()</code> <code>count()</code> <code>vals()</code> <code>dec()</code> <code>hex()</code> <code>abs()</code> <code>max()</code> <code>min()</code> <code>ip_rfc1918()</code> <code>ip_multicast()</code> <code>ip_linklocal()</code></li>
+          <li><b>Examples:</b> <code>tls &amp;&amp; tcp.port == 853</code> · <code>tls.handshake.type == "client_hello"</code> · <code>dns.a == 93.184.216.34</code> · <code>tcp.analysis.retransmission</code> · <code>upper(http.host) contains "GOOGLE"</code></li>
+          <li>Fields not yet deep-decoded gracefully fall back to a protocol-presence test instead of always failing. Not yet supported: macros (<code>$name</code>), field references, arithmetic (<code>+ - * /</code>), the layer (<code>#</code>) and raw (<code>@</code>) operators.</li>
         </ul>
         <p class="hint">Plain text with no operators falls back to a simple substring search. Press Enter to snap the camera to the filtered results.</p>
       </div>
