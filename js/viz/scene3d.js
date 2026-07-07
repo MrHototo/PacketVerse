@@ -370,10 +370,20 @@ export class Scene3D {
       const e = easeInOutCubic(f.t);
       this.camera.position.lerpVectors(f.fromCam, f.toCam, e);
       this.controls.target.lerpVectors(f.fromTarget, f.toTarget, e);
+      this.camera.lookAt(this.controls.target);
       if (f.t >= 1) this._flight = null;
+    } else {
+      // OrbitControls.update() re-derives its internal spherical state from
+      // camera.position/controls.target every call. Calling it *during* a
+      // programmatic flight (while we're also directly lerping position and
+      // target independently) lets the two fight over the camera each frame
+      // — most visibly when the straight-line lerp path passes close to the
+      // target, which OrbitControls' min-distance clamp then yanks back out
+      // of, producing a rapid, unstable jitter/spin. Skipping controls.update()
+      // for the duration of a flight avoids that entirely; once the flight
+      // ends, update() resumes and re-syncs cleanly from wherever we landed.
+      this.controls.update();
     }
-
-    this.controls.update();
     this.composer.render();
   }
 

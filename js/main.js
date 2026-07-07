@@ -590,14 +590,23 @@ function buildSyntheticFrame(proto, hostsIp, i) {
     endpointB: b,
     payloadOffset: null,
   };
+  // Ports/sessions are derived from the (a,b) pair, NOT from the running
+  // packet index `i` — reusing the same source port for repeated traffic
+  // between the same two hosts is what makes this look like a *handful* of
+  // real ongoing conversations (matching how buildFlowKey groups packets
+  // into flows) rather than ~80 one-packet "flows" for only 4 hosts. That
+  // earlier per-packet-unique-port version was overloading the force layout
+  // with dozens of redundant parallel edges between the same pair, which is
+  // what caused the visualization to visibly overshoot/oscillate on load.
+  const session = (i % hostsIp.length) * 100;
   if (proto === 'DNS') {
     base.layers.l3 = { type: 'IPv4', srcIp: a, dstIp: b, protocol: 'UDP', ttl: 64 };
-    base.layers.l4 = { type: 'UDP', srcPort: 51000 + i, dstPort: 53 };
+    base.layers.l4 = { type: 'UDP', srcPort: 51000 + session, dstPort: 53 };
     base.layers.l7 = { type: 'DNS', isResponse: i % 2 === 1, name: 'example.com', queryType: 'A', qdCount: 1, anCount: i % 2 };
     base.tags.push('UDP', 'DNS');
   } else if (proto === 'TLS') {
     base.layers.l3 = { type: 'IPv4', srcIp: a, dstIp: b, protocol: 'TCP', ttl: 64 };
-    base.layers.l4 = { type: 'TCP', srcPort: 51500 + i, dstPort: 443, flags: { SYN: false, ACK: true, FIN: false, RST: false, PSH: true, URG: false } };
+    base.layers.l4 = { type: 'TCP', srcPort: 51500 + session, dstPort: 443, flags: { SYN: false, ACK: true, FIN: false, RST: false, PSH: true, URG: false } };
     base.layers.l7 = { type: 'TLS', handshakeType: 'ClientHello', version: 'TLS 1.2/1.3', serverName: 'www.example.com' };
     base.tags.push('TCP', 'TLS');
   } else if (proto === 'ARP') {
@@ -611,7 +620,7 @@ function buildSyntheticFrame(proto, hostsIp, i) {
     base.tags.push('UDP', 'mDNS');
   } else {
     base.layers.l3 = { type: 'IPv4', srcIp: a, dstIp: b, protocol: 'TCP', ttl: 64 };
-    base.layers.l4 = { type: 'TCP', srcPort: 52000 + i, dstPort: 80, flags: { SYN: i % 10 === 0, ACK: true, FIN: false, RST: false, PSH: true, URG: false } };
+    base.layers.l4 = { type: 'TCP', srcPort: 52000 + session, dstPort: 80, flags: { SYN: i % 10 === 0, ACK: true, FIN: false, RST: false, PSH: true, URG: false } };
     base.tags.push('TCP');
   }
   base.summary = `${proto} demo packet`;
