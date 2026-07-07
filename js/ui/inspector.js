@@ -284,6 +284,11 @@ export class Inspector {
       <div class="asciiview">${escapeHtml(ascii.slice(0, 400))}${ascii.length > 400 ? '\u2026' : ''}</div>
     `;
     this.panel.querySelector('#view-convo-btn')?.addEventListener('click', () => {
+      // Narrow the 3D/2D scene, packet list, and dashboard to this
+      // conversation too — not just switch what the inspector panel itself
+      // is showing. Previously this button only changed the inspector's
+      // own breadcrumb, so nothing else on screen reflected the click.
+      this.onFocusFlow(flow);
       this._navigate({ type: 'flow', data: flow, label: `${shorten(flow.hostA)} \u2194 ${shorten(flow.hostB)}` }, false);
     });
     this.panel.querySelector('#follow-stream-btn2')?.addEventListener('click', () => {

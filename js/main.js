@@ -188,8 +188,18 @@ function init() {
     rebuildGraph();
   });
 
-  els.toggleLeftPanel?.addEventListener('click', () => togglePanel('left'));
-  els.toggleRightPanel?.addEventListener('click', () => togglePanel('right'));
+  els.toggleLeftPanel?.addEventListener('click', () => togglePanel('left', true));
+  els.toggleRightPanel?.addEventListener('click', () => togglePanel('right', true));
+
+  // Default both side drawers to collapsed so the visualization gets the
+  // full stage on first load, matching a Google-Maps-style "map first,
+  // panels on demand" layout instead of boxing the 3D scene in on every
+  // side at once. Whatever the user leaves them as is remembered across
+  // sessions (mirrors the 2D/3D view preference below).
+  const leftPref = localStorage.getItem('pv_leftPanelOpen');
+  const rightPref = localStorage.getItem('pv_rightPanelOpen');
+  if (leftPref !== 'true') togglePanel('left', false, true);
+  if (rightPref !== 'true') togglePanel('right', false, true);
   els.collapseTimelineBtn?.addEventListener('click', () => {
     els.timelineWrap.classList.toggle('timeline-collapsed');
   });
@@ -217,13 +227,18 @@ els.renderErrorDismiss?.addEventListener('click', () => {
   els.renderErrorBanner.classList.add('hidden');
 });
 
-function togglePanel(side) {
+/** @param {boolean} persist whether this call should update the remembered
+ * open/closed preference (user-initiated clicks do; the one-time startup
+ * default-collapse call does not, or every fresh session would just
+ * silently overwrite whatever the user chose last time before it's read). */
+function togglePanel(side, persist = true, forceCollapsed = null) {
   const drawer = side === 'left' ? els.sidebarLeft : els.sidebarRight;
   const tab = side === 'left' ? els.toggleLeftPanel : els.toggleRightPanel;
-  const collapsed = drawer.classList.toggle('panel-collapsed');
+  const collapsed = forceCollapsed !== null ? (drawer.classList.toggle('panel-collapsed', forceCollapsed), forceCollapsed) : drawer.classList.toggle('panel-collapsed');
   tab.classList.toggle('panel-collapsed', collapsed);
   els.timelineWrap.classList.toggle(`panel-collapsed-${side}`, collapsed);
   els.packetListWrap.classList.toggle(`panel-collapsed-${side}`, collapsed);
+  if (persist) localStorage.setItem(side === 'left' ? 'pv_leftPanelOpen' : 'pv_rightPanelOpen', String(!collapsed));
 }
 
 async function loadFile(file) {
@@ -787,10 +802,30 @@ function buildSyntheticFrame(proto, hostsIp, i) {
 
 function renderLegend() {
   if (!els.legendPanel) return;
-  els.legendPanel.innerHTML = Object.entries(PROTOCOL_COLORS)
+  const protoRows = Object.entries(PROTOCOL_COLORS)
     .map(
       ([proto, hex]) =>
         `<div class="legend-row"><span class="legend-swatch" style="background:${hexToCss(hex)}"></span>${proto}</div>`
     )
     .join('');
+  // Beyond "what color is what protocol", the thing users actually get
+  // stuck on is what size/shape/brightness/motion *mean* — so the legend
+  // also documents the full visual language of the 3D/2D scene in one
+  // place, phrased in plain English rather than assuming it's self-evident.
+  els.legendPanel.innerHTML = `
+    <div class="legend-section-title">Connection color = protocol</div>
+    ${protoRows}
+    <div class="legend-section-title">What the shapes mean</div>
+    <div class="legend-row"><span class="legend-glyph legend-glyph-sphere"></span>A device (host) — one IP or MAC address that sent or received traffic.</div>
+    <div class="legend-row"><span class="legend-glyph legend-glyph-cluster"></span>A collapsed subnet — several hosts on the same /24 network, grouped into one node to reduce clutter. Click it to expand.</div>
+    <div class="legend-row"><span class="legend-glyph legend-glyph-line"></span>A conversation between two devices — an animated line, colored by the protocol carrying the most traffic in it.</div>
+    <div class="legend-section-title">What size &amp; motion mean</div>
+    <div class="legend-row">Bigger sphere → more total bytes sent/received by that host.</div>
+    <div class="legend-row">Thicker, brighter line → more bytes exchanged in that conversation.</div>
+    <div class="legend-row">Moving dots along a line → packets actually flowing; faster dots = higher packet rate.</div>
+    <div class="legend-row">Dim / faded objects → exist in the capture but excluded by the current filter, time range, or focus.</div>
+    <div class="legend-section-title">Colors that aren't protocols</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:#e9b44c"></span>Amber wireframe = a collapsed subnet cluster, not a single device.</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:#9e9e9e"></span>Gray = broadcast/ARP-only traffic (no higher-layer protocol seen).</div>
+  `;
 }

@@ -241,10 +241,15 @@ function decodeApplication(data, ip, l4, layers, tags, payloadOffset) {
     tags.add('SSDP');
     return;
   }
-  // Detect TLS by its actual record header byte signature (content-type 0x16,
-  // version 0x03xx) rather than assuming port 443 — real-world TLS shows up on
-  // many ports (DoT/853, DoH/443, SMTPS/465, mail/993, custom app ports, etc.),
-  // and Wireshark itself dissects TLS this way rather than by port alone.
+  // Detect TLS by its actual record header byte signature — content-type
+  // must be one of the four valid TLS record types (ChangeCipherSpec/Alert/
+  // Handshake/ApplicationData), version 0x03xx — rather than assuming port
+  // 443. Real-world TLS shows up on many ports (DoT/853, DoH/443, SMTPS/465,
+  // mail/993, custom app ports, etc.), and Wireshark itself dissects TLS
+  // this way rather than by port alone. Checking *all four* content types
+  // (not just Handshake/0x16) matters a lot in practice: the bulk of any
+  // real TLS session is ApplicationData (0x17) records, which were
+  // previously invisible to this detector entirely.
   if (looksLikeTlsRecord(data, payloadOffset)) {
     layers.l7 = decodeTls(data, payloadOffset);
     tags.add('TLS');
@@ -257,33 +262,75 @@ function decodeApplication(data, ip, l4, layers, tags, payloadOffset) {
   }
 }
 
+const TLS_RECORD_CONTENT_TYPES = new Set([0x14, 0x15, 0x16, 0x17]);
+
 function looksLikeTlsRecord(data, offset) {
-  return offset + 3 <= data.length && data[offset] === 0x16 && data[offset + 1] === 0x03;
+  return offset + 5 <= data.length && TLS_RECORD_CONTENT_TYPES.has(data[offset]) && data[offset + 1] === 0x03;
 }
 
 const TLS_CONTENT_TYPES = { 0x14: 'ChangeCipherSpec', 0x15: 'Alert', 0x16: 'Handshake', 0x17: 'ApplicationData' };
 
-/** Decodes a TLS record; delegates handshake message parsing (ClientHello/
- * ServerHello/Certificate) to tls.js, which does the real field-level work. */
+/**
+ * Decodes *every* consecutive TLS record found in this segment's payload,
+ * not just the first. This matters because a single TCP segment very
+ * commonly carries several TLS records back-to-back — e.g. a server
+ * frequently batches ServerHello + Certificate + ServerHelloDone (three
+ * separate TLS records) into one TCP segment. Only decoding the first
+ * record meant fields like `tls.handshake.type==11` (Certificate) or
+ * `tls.cert.subject` would silently never match such packets even though
+ * the bytes were right there — this fixes that by scanning forward and
+ * aggregating every record's fields into one L7 object, mirroring how
+ * Wireshark shows multiple protocol-tree entries for one frame.
+ */
 function decodeTls(data, offset) {
-  const contentType = data[offset];
-  const recordVersion = (data[offset + 1] << 8) | data[offset + 2];
-  const base = {
+  const records = [];
+  let cursor = offset;
+  let guard = 0;
+  while (guard < 16 && looksLikeTlsRecord(data, cursor)) {
+    guard++;
+    const contentType = data[cursor];
+    const recordVersion = (data[cursor + 1] << 8) | data[cursor + 2];
+    const recordLength = (data[cursor + 3] << 8) | data[cursor + 4];
+    const recBase = {
+      contentType,
+      contentTypeName: TLS_CONTENT_TYPES[contentType] || `0x${contentType.toString(16)}`,
+      version: TLS_VERSION_MAP[recordVersion] || `0x${recordVersion.toString(16)}`,
+      recordLength,
+    };
+    if (contentType === 0x16) {
+      try {
+        records.push({ ...recBase, ...decodeHandshakeRecord(data, cursor) });
+      } catch {
+        records.push({ ...recBase, handshakeType: 'Handshake (undecodable)' });
+      }
+    } else {
+      records.push({ ...recBase, handshakeType: null });
+    }
+    if (recordLength === 0) break;
+    cursor += 5 + recordLength;
+  }
+
+  if (!records.length) {
+    // Shouldn't normally happen (caller already checked looksLikeTlsRecord),
+    // but fail gracefully rather than returning something malformed.
+    return { type: 'TLS', contentTypeName: 'Unknown', handshakeType: null, records: [] };
+  }
+
+  const primary = records.find((r) => r.contentType === 0x16) || records[0];
+  const handshakeTypes = records.filter((r) => r.contentType === 0x16 && r.handshakeType).map((r) => r.handshakeType);
+  const handshakeMsgTypes = records.filter((r) => r.contentType === 0x16 && r.msgType != null).map((r) => r.msgType);
+  const certificates = records.flatMap((r) => r.certificates || []);
+
+  return {
     type: 'TLS',
-    contentTypeName: TLS_CONTENT_TYPES[contentType] || `0x${contentType.toString(16)}`,
-    version: TLS_VERSION_MAP[recordVersion] || `0x${recordVersion.toString(16)}`,
+    ...primary,
+    records,
+    recordCount: records.length,
+    handshakeTypes,
+    handshakeMsgTypes,
+    certificates: certificates.length ? certificates : primary.certificates,
+    contentTypes: [...new Set(records.map((r) => r.contentTypeName))],
   };
-  if (contentType !== 0x16) {
-    // Non-handshake record (application data / alert / change-cipher-spec):
-    // nothing more to decode without the session keys.
-    return { ...base, handshakeType: null };
-  }
-  try {
-    const hs = decodeHandshakeRecord(data, offset);
-    return { ...base, ...hs };
-  } catch {
-    return { ...base, handshakeType: 'Handshake (undecodable)' };
-  }
 }
 
 const DNS_RECORD_TYPES = { 1: 'A', 2: 'NS', 5: 'CNAME', 6: 'SOA', 12: 'PTR', 15: 'MX', 16: 'TXT', 28: 'AAAA', 33: 'SRV', 64: 'SVCB', 65: 'HTTPS' };

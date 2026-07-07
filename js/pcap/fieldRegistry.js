@@ -177,16 +177,29 @@ export const FIELDS = {
   'dns.time': { type: 'number', proto: 'dns', get: () => null },
 
   // ---- tls / ssl ----
-  'tls.record.content_type': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? L7(e).contentTypeName : null) },
+  // Modeled explicitly (rather than left to the generic namespace fallback,
+  // which would just test "is this packet TLS at all") because Wireshark's
+  // own `tls.handshake` is a real field meaning specifically "this frame
+  // contains a Handshake-content-type record" -- true for ClientHello,
+  // ServerHello, Certificate, Finished, etc., false for a packet that's
+  // pure ApplicationData/Alert/ChangeCipherSpec.
+  'tls.handshake': { type: 'bool', proto: 'tls', get: (e) => (isTls(e) ? ((L7(e).handshakeTypes && L7(e).handshakeTypes.length > 0) || L7(e).contentTypeName === 'Handshake') : null) },
+  'tls.record.content_type': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? L7(e).contentTypes || L7(e).contentTypeName : null) },
   'tls.record.version': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? L7(e).version : null) },
   'tls.record.length': { type: 'number', proto: 'tls', get: (e) => (isTls(e) ? L7(e).recordLength : null) },
-  'tls.handshake.type': { type: 'number', proto: 'tls', enum: TLS_HANDSHAKE_ENUM, get: (e) => (isTls(e) ? L7(e).msgType ?? null : null) },
+  // Multi-valued: a single packet can carry several concatenated TLS
+  // records (e.g. ServerHello+Certificate+ServerHelloDone in one segment),
+  // so this checks every handshake record found in the frame, not just the
+  // first — `tls.handshake.type==11` correctly matches a packet whose
+  // *second* record is a Certificate message, for instance.
+  'tls.handshake.type': { type: 'number', proto: 'tls', enum: TLS_HANDSHAKE_ENUM, get: (e) => (isTls(e) ? (L7(e).handshakeMsgTypes?.length ? L7(e).handshakeMsgTypes : (L7(e).msgType != null ? [L7(e).msgType] : [])) : []) },
   'tls.handshake.version': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? L7(e).clientVersion ?? null : null) },
   'tls.handshake.extensions_server_name': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? L7(e).serverName ?? null : null) },
   'tls.handshake.ciphersuite': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? L7(e).cipherSuite?.name ?? null : null) },
   'tls.handshake.ciphersuites': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? (L7(e).cipherSuites || []).map((c) => c.name) : []) },
   'tls.handshake.extensions_alpn_str': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? L7(e).alpn || [] : []) },
-  'tls.handshake.certificate': { type: 'bool', proto: 'tls', get: (e) => (isTls(e) ? L7(e).handshakeType === 'Certificate' : null) },
+  'tls.handshake.certificate': { type: 'bool', proto: 'tls', get: (e) => (isTls(e) ? (L7(e).handshakeTypes || []).includes('Certificate') : null) },
+  'tls.record.count': { type: 'number', proto: 'tls', get: (e) => (isTls(e) ? L7(e).recordCount ?? 1 : null) },
   'tls.cert.subject': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? (L7(e).certificates || []).map((c) => c.subjectCN).filter(Boolean) : []) },
   'tls.cert.issuer': { type: 'string', proto: 'tls', get: (e) => (isTls(e) ? (L7(e).certificates || []).map((c) => c.issuerCN).filter(Boolean) : []) },
   'tls.alert_message': { type: 'bool', proto: 'tls', get: (e) => (isTls(e) ? L7(e).contentTypeName === 'Alert' : null) },
