@@ -4,6 +4,7 @@
  * Dispatches a 'timeline:range' CustomEvent on the container element
  * whenever the selection changes so main.js can filter the 3D scene.
  */
+import { maxOf } from '../utils/mathSafe.js';
 export class Timeline {
   constructor(canvas) {
     this.canvas = canvas;
@@ -81,7 +82,7 @@ export class Timeline {
     ctx.clearRect(0, 0, rect.width, rect.height);
 
     if (!this.buckets.length) return;
-    const max = Math.max(1, ...this.buckets.map((b) => b.count));
+    const max = Math.max(1, maxOf(this.buckets.map((b) => b.count)));
     const barWidth = rect.width / this.buckets.length;
 
     this.buckets.forEach((b, i) => {

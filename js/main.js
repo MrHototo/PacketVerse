@@ -149,7 +149,14 @@ function init() {
   });
 
   els.fileInput.addEventListener('change', (e) => {
-    if (e.target.files[0]) loadFile(e.target.files[0]);
+    const file = e.target.files[0];
+    // Reset the input's value immediately (before the async parse/decode
+    // work below even starts) so selecting the exact same file again later
+    // -- e.g. retrying after a failed load -- reliably fires a fresh
+    // 'change' event. Some browsers silently skip 'change' if the picked
+    // path is identical to the input's current value.
+    e.target.value = '';
+    if (file) loadFile(file);
   });
   ['dragover', 'dragenter'].forEach((evt) =>
     els.dropZone.addEventListener(evt, (e) => {
@@ -577,7 +584,11 @@ function rebuildGraph() {
 
 function rebuildGraphInner() {
   if (!model) return;
+  console.log('[PacketVerse] rebuildGraph: packets=', model.packets.length,
+    'hosts=', model.hosts.size, 'flows=', model.flows.size);
   displayGraph = computeDisplayGraph(model.hosts, model.flows, expandedClusters);
+  console.log('[PacketVerse] rebuildGraph: displayGraph hosts=', displayGraph.hosts.size,
+    'flows=', displayGraph.flows.size, 'clusters=', displayGraph.clusters?.size ?? 0);
 
   const protocolCounts = {};
   for (const f of model.flows.values()) {

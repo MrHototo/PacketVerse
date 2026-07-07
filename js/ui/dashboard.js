@@ -7,6 +7,7 @@
  */
 import { formatBytes } from '../utils/bytes.js';
 import { hexToCss, colorForProtocol } from '../utils/colors.js';
+import { maxOf } from '../utils/mathSafe.js';
 
 export function renderDashboard(container, { hosts, flows, packets }, callbacks = {}) {
   const { onSelectHost, onSelectProtocol } = callbacks;
@@ -18,10 +19,10 @@ export function renderDashboard(container, { hosts, flows, packets }, callbacks 
     const key = flow.appProtocol || flow.protocol;
     protocolCounts[key] = (protocolCounts[key] || 0) + flow.packets;
   }
-  const maxProtoCount = Math.max(1, ...Object.values(protocolCounts));
+  const maxProtoCount = Math.max(1, maxOf(Object.values(protocolCounts)));
 
   const topTalkers = [...hosts.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 8);
-  const maxTalkerBytes = Math.max(1, ...topTalkers.map((h) => h.bytes));
+  const maxTalkerBytes = Math.max(1, maxOf(topTalkers.map((h) => h.bytes)));
 
   container.innerHTML = `
     <div class="stat-row">

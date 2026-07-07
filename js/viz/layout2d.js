@@ -9,6 +9,7 @@
  * oscillation — exactly the "cleaner spacing, easier navigation" 2D mode
  * asked for, distinct from the 3D force-directed sphere.
  */
+import { maxOf } from '../utils/mathSafe.js';
 export function computeRadialLayout(hosts, flows, { ringGap = 130, minRadius = 90 } = {}) {
   const ids = [...hosts.keys()];
   const positions = new Map();
@@ -52,7 +53,7 @@ export function computeRadialLayout(hosts, flows, { ringGap = 130, minRadius = 9
   // Any host unreachable from the hub (disconnected component) still needs a
   // ring — push it one past the current max so it renders as an outer group
   // rather than being dropped.
-  const maxKnownHop = Math.max(0, ...[...hop.values()]);
+  const maxKnownHop = Math.max(0, maxOf([...hop.values()]));
   let disconnectedRing = maxKnownHop + 1;
   for (const id of ids) {
     if (!hop.has(id)) hop.set(id, disconnectedRing);

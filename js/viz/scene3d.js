@@ -14,6 +14,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { colorForProtocol } from '../utils/colors.js';
 import { ForceLayout3D } from './forceLayout.js';
+import { maxOf } from '../utils/mathSafe.js';
 
 const DIM_OPACITY = 0.08;
 const ACTIVE_OPACITY = 0.9;
@@ -197,7 +198,7 @@ export class Scene3D {
       this.layout.reheat(anyCarried ? 0.5 : 1);
     }
 
-    const maxBytes = Math.max(1, ...[...hosts.values()].map((h) => h.bytes));
+    const maxBytes = Math.max(1, maxOf([...hosts.values()].map((h) => h.bytes)));
     for (const host of hosts.values()) {
       const size = 2.6 + 7 * Math.cbrt(host.bytes / maxBytes);
       const color = nodeColorFor(host);
@@ -235,7 +236,7 @@ export class Scene3D {
     const h = Math.max(1, this.container.clientHeight);
     const pr = this.renderer.getPixelRatio();
 
-    const maxFlowBytes = Math.max(1, ...[...flows.values()].map((f) => f.bytes));
+    const maxFlowBytes = Math.max(1, maxOf([...flows.values()].map((f) => f.bytes)));
     for (const flow of flows.values()) {
       if (!hosts.has(flow.hostA) || !hosts.has(flow.hostB)) continue;
       const color = colorForProtocol(flow.appProtocol || flow.protocol);

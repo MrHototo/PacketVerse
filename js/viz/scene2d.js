@@ -11,6 +11,7 @@
  */
 import { colorForProtocol } from '../utils/colors.js';
 import { computeRadialLayout } from './layout2d.js';
+import { maxOf } from '../utils/mathSafe.js';
 
 const DIM_ALPHA = 0.12;
 const ACTIVE_ALPHA = 0.95;
@@ -210,7 +211,7 @@ export class Scene2D {
   }
 
   _nodeRadius(host) {
-    const maxBytes = Math.max(1, ...[...this.hosts.values()].map((h) => h.bytes));
+    const maxBytes = Math.max(1, maxOf([...this.hosts.values()].map((h) => h.bytes)));
     const base = 6 + 16 * Math.cbrt((host.bytes || 0) / maxBytes);
     return host.isCluster ? base * 1.3 : base;
   }
@@ -294,7 +295,7 @@ export class Scene2D {
       focusHostIds = new Set(f ? [f.hostA, f.hostB] : []);
     }
 
-    const maxFlowBytes = Math.max(1, ...[...this.flows.values()].map((f) => f.bytes));
+    const maxFlowBytes = Math.max(1, maxOf([...this.flows.values()].map((f) => f.bytes)));
     for (const flow of this.flows.values()) {
       const pa = this.positions.get(flow.hostA), pb = this.positions.get(flow.hostB);
       if (!pa || !pb) continue;
