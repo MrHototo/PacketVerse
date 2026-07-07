@@ -26,10 +26,21 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
 
 * **Drag-and-drop PCAP/PCAPNG upload** — parsed entirely in the browser via a
   small, dependency-free binary parser (`js/pcap/pcapParser.js`).
-* **Full-bleed, Google-Maps-style 3D map** — the 3D graph *is* the app
+* **Full-bleed, Google-Maps-style map, in 3D or 2D** — the graph *is* the app
   surface (not a small panel); a search/filter bar, legend, dashboard, and
   inspector float on top as collapsible glass panels, and +/- buttons give
-  Maps-style zoom control alongside scroll/drag orbiting.
+  Maps-style zoom control alongside scroll/drag orbiting. A top-right toggle
+  switches instantly between the 3D force-directed scene and a **2D radial
+  layout** (hub-and-rings by traffic/hop-distance, not just a flattened copy
+  of the 3D view — see `js/viz/layout2d.js`) — your preference is remembered
+  between visits via `localStorage`. Every filter, selection, and focus state
+  is shared between both modes, so switching never loses your place.
+* **Physically converging layout, not perpetual motion** — the 3D force
+  simulation uses an alpha-decay schedule (the same mechanism used by
+  d3-force): it runs hot right after a graph change and then genuinely
+  **freezes** once settled, so nodes stop moving entirely and stay stationary
+  until the *data* changes (a filter, a focus, an expand/collapse) — orbiting,
+  panning, or zooming the camera never reheats it.
 * **Wireshark-style display filter engine** — a real recursive-descent parser
   supporting `and`/`or`/`not`/`&&`/`||`/`!`, parentheses, comparisons
   (`==`, `!=`, `>`, `<`), `contains`, `matches`/`~` regex, and `in {a, b, c}`
@@ -44,14 +55,19 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
   Protocol/Length/Info table that always reflects the current filter and time
   range; click any row to open that exact packet in the Inspector and jump
   the 3D scene to its conversation.
-* **Ego-network navigation, not just highlighting** — click any host or
-  connection and the camera flies to it while the scene rebuilds to show only
-  its directly-related traffic (graph-database-style traversal, not a giant
-  static map with parts dimmed). A breadcrumb bar tracks your drill-down path
-  (click any crumb to jump back), an **"+ Expand context"** button reveals one
-  more hop of neighbors at a time, and **"Exit focus — show all"** returns to
-  the full (filtered) graph. Focus and the display filter compose together —
-  focusing while a filter is active stays within that filter's matches.
+* **Click to select, double-click to isolate** — a single click on a host or
+  connection selects it (centers/zooms the camera on it and shows its detail
+  in the Inspector) *without* narrowing what else is visible, so browsing
+  never feels like it's suddenly cutting the graph out from under you.
+  **Double-click** is the deliberate "investigate this" action: the scene
+  rebuilds to show only that node's directly-related traffic
+  (graph-database-style traversal, not a giant static map with parts dimmed).
+  A breadcrumb bar tracks your drill-down path (click any crumb to jump
+  back), an **"+ Expand context"** button reveals one more hop of neighbors
+  at a time, and **"Exit focus — show all"** returns to the full (filtered)
+  graph. Clicking empty space clears the current selection. Focus and the
+  display filter compose together — focusing while a filter is active stays
+  within that filter's matches.
 * **Drill-down inspector with Wireshark-style layer breakdown** — click a
   host to see its conversations, click a conversation to see its packets,
   click a packet for a full Frame / Ethernet II / Internet Protocol /
@@ -59,11 +75,17 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
   Wireshark presents them) plus hex/ASCII view and a plain-English
   explanation — with a breadcrumb trail to jump back up. Every drill-down
   list narrows to match the active filter/time range automatically.
-* **Follow Stream with sequence-based reassembly** — for TCP conversations,
-  segments are ordered by sequence number per direction and de-duplicated
-  (retransmissions removed) rather than shown in raw arrival order, then
-  color-coded by direction (client → server / server → client). UDP streams
-  fall back to arrival order (no sequence numbers exist to sort by).
+* **Follow Stream, fully wired into the visualization** — selecting "Follow
+  this stream" doesn't just open a reassembly view in the Inspector, it also
+  isolates the 3D/2D scene, the packet list, and every other panel down to
+  *exactly* that one conversation (hiding all unrelated hosts/flows/packets),
+  fits the camera to it, and adds a dedicated breadcrumb — "Expand context"
+  from there reveals the conversation's wider neighborhood one hop at a time,
+  and "Exit stream" restores whatever filter/focus was active before you
+  followed it. Segments are ordered by TCP sequence number per direction and
+  de-duplicated (retransmissions removed) rather than shown in raw arrival
+  order, then color-coded by direction (client → server / server → client).
+  UDP streams fall back to arrival order (no sequence numbers exist to sort by).
 * **Deep, Wireshark-parity packet inspection** — every packet exposes Expert
   Info (retransmissions, duplicate ACKs, zero windows, DNS errors — each with
   a severity), TCP stream index + relative sequence/ack numbers, full DNS
@@ -129,7 +151,10 @@ protocolDecoder.js    → decodes Ethernet/ARP/IPv4/IPv6/TCP/UDP/ICMP/DNS/TLS/HT
       │
 graphModel.js          → aggregates frames into Hosts and Flows (conversations)
       │
-      ├─ scene3d.js         → 3D force-directed graph (Three.js)
+      ├─ scene3d.js         → 3D force-directed graph (Three.js), alpha-decay convergence
+      ├─ scene2d.js         → 2D radial/ring layout renderer (Canvas2D), same API as scene3d.js
+      ├─ layout2d.js        → deterministic hub-and-rings layout algorithm for the 2D view
+      ├─ egoNetwork.js      → BFS ego-network computation powering focus/isolate/expand
       ├─ timeline.js          → traffic-volume timeline + range selection
       ├─ filterExpression.js    → Wireshark-style filter parser, evaluated per-packet
       ├─ filters.js               → filter bar UI (search box + protocol chips)

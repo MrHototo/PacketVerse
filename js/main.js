@@ -25,6 +25,7 @@ import { computeDisplayGraph } from './pcap/clustering.js';
 import { computeEgoNetwork } from './pcap/egoNetwork.js';
 import { runSecurityChecks } from './pcap/securityEngine.js';
 import { Scene3D } from './viz/scene3d.js';
+import { Scene2D } from './viz/scene2d.js';
 import { Timeline } from './ui/timeline.js';
 import { FilterBar } from './ui/filters.js';
 import { Inspector } from './ui/inspector.js';
@@ -37,7 +38,10 @@ const els = {
   dropZone: document.getElementById('drop-zone'),
   fileInput: document.getElementById('file-input'),
   app: document.getElementById('app'),
-  sceneContainer: document.getElementById('scene-container'),
+  sceneContainer3d: document.getElementById('scene-container-3d'),
+  sceneContainer2d: document.getElementById('scene-container-2d'),
+  vizMode3dBtn: document.getElementById('viz-mode-3d-btn'),
+  vizMode2dBtn: document.getElementById('viz-mode-2d-btn'),
   timelineCanvas: document.getElementById('timeline-canvas'),
   timelineWrap: document.getElementById('timeline-wrap'),
   search: document.getElementById('search-input'),
@@ -85,7 +89,10 @@ const els = {
 };
 
 let model = null;
-let scene = null;
+let scene3d = null;
+let scene2d = null;
+let viz = null; // whichever of scene3d/scene2d is currently active — all camera-only ops go through this
+let vizMode = (localStorage.getItem('packetverse.vizMode') === '2d') ? '2d' : '3d';
 let timeline = null;
 let filterBar = null;
 let inspector = null;
@@ -104,13 +111,15 @@ function init() {
   inspector = new Inspector(els.inspectorPanel, els.inspectorBreadcrumb, {
     onFocusHost: (host) => pushFocus({ kind: 'host', id: host.id, hops: 1 }),
     onFocusFlow: (flow) => pushFocus({ kind: 'flow', id: flow.key, hops: 1 }),
+    onFollowStream: (flow) => followStream(flow),
+    onExitStream: () => exitStreamFocus(),
   });
 
   packetList = new PacketList(els.packetListContainer, {
     onSelectPacket: (entry) => {
       inspector.showPacket(entry);
       const displayKey = displayGraph?.rawFlowKeyToDisplayKey?.get(entry.flowKey);
-      if (displayKey) scene?.setPrimaryFocus('flow', displayKey);
+      if (displayKey) setPrimaryFocusAll('flow', displayKey);
     },
   });
 
@@ -152,16 +161,19 @@ function init() {
     }
   });
   els.clearFilterBtn?.addEventListener('click', () => filterBar?.clear());
-  els.fitFilteredBtn?.addEventListener('click', () => scene?.fitToVisible());
+  els.fitFilteredBtn?.addEventListener('click', () => viz?.fitToVisible());
 
-  els.zoomInBtn?.addEventListener('click', () => scene?.zoomIn());
-  els.zoomOutBtn?.addEventListener('click', () => scene?.zoomOut());
-  els.resetViewBtn?.addEventListener('click', () => scene?.resetCamera(true));
+  els.zoomInBtn?.addEventListener('click', () => viz?.zoomIn());
+  els.zoomOutBtn?.addEventListener('click', () => viz?.zoomOut());
+  els.resetViewBtn?.addEventListener('click', () => viz?.resetCamera(true));
   els.clearFocusBtn?.addEventListener('click', () => exitFocus());
   els.exitFocusBtn?.addEventListener('click', () => exitFocus());
   els.expandFocusBtn?.addEventListener('click', () => expandFocus());
-  els.toggleLabels?.addEventListener('change', (e) => scene?.setLabelsVisible(e.target.checked));
-  els.toggleParticles?.addEventListener('change', (e) => scene?.setParticlesEnabled(e.target.checked));
+  els.toggleLabels?.addEventListener('change', (e) => { scene3d?.setLabelsVisible(e.target.checked); scene2d?.setLabelsVisible(e.target.checked); });
+  els.toggleParticles?.addEventListener('change', (e) => { scene3d?.setParticlesEnabled(e.target.checked); scene2d?.setParticlesEnabled(e.target.checked); });
+
+  els.vizMode3dBtn?.addEventListener('click', () => setVizMode('3d'));
+  els.vizMode2dBtn?.addEventListener('click', () => setVizMode('2d'));
 
   els.expandAllBtn?.addEventListener('click', () => {
     if (!displayGraph) return;
@@ -229,11 +241,18 @@ function finishLoad(rawPackets, decoded, label) {
   showProgress(null);
   els.app.classList.add('loaded');
 
-  if (!scene) {
-    scene = new Scene3D(els.sceneContainer, {
-      onSelect: handleSelect,
+  if (!scene3d) {
+    scene3d = new Scene3D(els.sceneContainer3d, {
+      onSelect: selectObject,
+      onDoubleSelect: isolateObject,
       onHover: handleHover,
     });
+    scene2d = new Scene2D(els.sceneContainer2d, {
+      onSelect: selectObject,
+      onDoubleSelect: isolateObject,
+      onHover: handleHover,
+    });
+    applyVizModeUI(false);
   }
   inspector.setModel(model);
 
@@ -251,7 +270,51 @@ function finishLoad(rawPackets, decoded, label) {
   });
 
   rebuildGraph();
-  scene.resetCamera(false);
+  viz.resetCamera(false);
+}
+
+// ---------------------------------------------------------------------------
+// Viz-mode (2D/3D) switching. Both renderers are kept live and in sync with
+// the same graph/focus state at all times — switching is instant (no
+// recompute) and each remembers its own camera framing. Preference persists
+// across sessions via localStorage.
+// ---------------------------------------------------------------------------
+
+function setVizMode(mode) {
+  if (mode !== '2d' && mode !== '3d') return;
+  vizMode = mode;
+  localStorage.setItem('packetverse.vizMode', mode);
+  applyVizModeUI(true);
+}
+
+function applyVizModeUI(animateFit) {
+  const is3d = vizMode === '3d';
+  els.sceneContainer3d?.classList.toggle('hidden', !is3d);
+  els.sceneContainer2d?.classList.toggle('hidden', is3d);
+  els.vizMode3dBtn?.classList.toggle('viz-mode-active', is3d);
+  els.vizMode2dBtn?.classList.toggle('viz-mode-active', !is3d);
+  viz = is3d ? scene3d : scene2d;
+  if (!viz) return;
+  // The just-shown container may have been `display:none` (0 size) until
+  // now, so resize before framing or the fit-to-view math would use stale
+  // dimensions.
+  viz.resize();
+  viz.fitToVisible(animateFit);
+}
+
+/** Pushes the current visible graph to BOTH renderers (not just the active
+ * one) so switching modes never shows stale data or requires a recompute. */
+function setGraphAll(hosts, flows) {
+  scene3d?.setGraph(hosts, flows);
+  scene2d?.setGraph(hosts, flows);
+}
+function setPrimaryFocusAll(kind, id) {
+  scene3d?.setPrimaryFocus(kind, id);
+  scene2d?.setPrimaryFocus(kind, id);
+}
+function clearPrimaryFocusAll() {
+  scene3d?.clearPrimaryFocus();
+  scene2d?.clearPrimaryFocus();
 }
 
 /** Recomputes the (possibly clustered) display graph from the full model.
@@ -319,7 +382,24 @@ function refreshViews() {
   const focus = focusStack[focusStack.length - 1] || null;
   let visibleHosts = filteredHosts;
   let visibleFlows = filteredFlows;
-  if (focus) {
+  if (focus && focus.kind === 'stream') {
+    // Follow Stream isolation: show *exactly* the one conversation being
+    // followed (not the general ego-network of its endpoints, which could
+    // pull in unrelated flows those hosts happen to also have) — unless the
+    // user explicitly asked to expand outward, in which case it behaves like
+    // a normal 2-host ego network from there on.
+    if (focus.hops > 0) {
+      const ego = computeEgoNetwork(filteredHosts, filteredFlows, [focus.hostA, focus.hostB], focus.hops);
+      visibleHosts = ego.hosts;
+      visibleFlows = ego.flows;
+    } else {
+      visibleHosts = new Map();
+      visibleFlows = new Map();
+      if (filteredHosts.has(focus.hostA)) visibleHosts.set(focus.hostA, filteredHosts.get(focus.hostA));
+      if (filteredHosts.has(focus.hostB)) visibleHosts.set(focus.hostB, filteredHosts.get(focus.hostB));
+      if (filteredFlows.has(focus.id)) visibleFlows.set(focus.id, filteredFlows.get(focus.id));
+    }
+  } else if (focus) {
     const focusHostIds = focus.kind === 'host'
       ? [focus.id]
       : (() => {
@@ -331,7 +411,7 @@ function refreshViews() {
     visibleFlows = ego.flows;
   }
 
-  scene.setGraph(visibleHosts, visibleFlows);
+  setGraphAll(visibleHosts, visibleFlows);
   renderFocusBar();
 
   // Every other view (packet list, inspector, dashboard, stats tabs) reflects
@@ -382,12 +462,14 @@ function refreshViews() {
 // navigation model, replacing the old dim-everything-else approach.
 // ---------------------------------------------------------------------------
 
+/** Double-click action: isolates the clicked host/flow's neighborhood —
+ * this is the graph-database-style "traverse into" step. Single clicks
+ * (selectObject, below) only select+center and never narrow the graph. */
 function pushFocus(entry) {
   focusStack.push(entry);
   refreshViews();
-  scene.setPrimaryFocus(entry.kind, entry.id);
-  const centerId = entry.kind === 'host' ? entry.id : (displayGraph.flows.get(entry.id)?.hostA ?? null);
-  scene.flyToNode(centerId);
+  setPrimaryFocusAll(entry.kind, entry.id);
+  viz.fitToVisible();
   const host = displayGraph?.hosts.get(entry.kind === 'host' ? entry.id : '');
   if (entry.kind === 'host' && host) inspector.showHost(host);
   else if (entry.kind === 'flow') {
@@ -401,24 +483,94 @@ function expandFocus() {
   if (!top) return;
   top.hops += 1;
   refreshViews();
-  scene.fitToVisible();
+  viz.fitToVisible();
 }
 
 function popFocusTo(index) {
   focusStack = focusStack.slice(0, index + 1);
   refreshViews();
-  scene.fitToVisible();
+  viz.fitToVisible();
 }
 
 function exitFocus() {
   if (!focusStack.length) {
-    scene?.clearPrimaryFocus();
+    clearPrimaryFocusAll();
     inspector.showEmpty();
     return;
   }
   focusStack = [];
   refreshViews();
-  scene.fitToVisible();
+  viz.fitToVisible();
+}
+
+/** Follow Stream: pushes a dedicated 'stream' focus entry that isolates the
+ * visualization down to exactly the one conversation being followed — the
+ * graph rebuilds around it, the camera fits it, and the packet list/inspector
+ * narrow to just its packets, all via the same refreshViews() pipeline every
+ * other filter/focus change already goes through. */
+function followStream(flow) {
+  if (!displayGraph) return;
+  const displayKey = displayGraph.rawFlowKeyToDisplayKey.get(flow.key) || flow.key;
+  const displayFlow = displayGraph.flows.get(displayKey);
+  if (!displayFlow) return;
+  focusStack.push({ kind: 'stream', id: displayKey, hostA: displayFlow.hostA, hostB: displayFlow.hostB, hops: 0 });
+  refreshViews();
+  setPrimaryFocusAll('flow', displayKey);
+  viz.fitToVisible();
+}
+
+/** Exits Follow Stream mode, popping only the stream layer off the focus
+ * stack — this naturally "restores the previous visualization and filters"
+ * (whatever filter text and/or ego-network focus was active underneath is
+ * untouched, since it was never modified when entering stream mode). */
+function exitStreamFocus() {
+  const top = focusStack[focusStack.length - 1];
+  if (top?.kind === 'stream') {
+    focusStack.pop();
+  } else {
+    focusStack = [];
+  }
+  refreshViews();
+  viz.fitToVisible();
+  const remaining = focusStack[focusStack.length - 1];
+  if (remaining) setPrimaryFocusAll(remaining.kind === 'stream' ? 'flow' : remaining.kind, remaining.kind === 'stream' ? remaining.id : remaining.id);
+  else clearPrimaryFocusAll();
+  inspector.showEmpty();
+}
+
+/** Single-click action: pure selection — emphasizes the clicked object and
+ * centers/zooms the camera on it, WITHOUT narrowing what's rendered. This is
+ * what makes clicking feel predictable rather than immediately cutting away
+ * the rest of the graph; double-click (isolateObject) is the deliberate
+ * "narrow the investigation" action. */
+function selectObject(userData) {
+  if (!userData) {
+    clearPrimaryFocusAll();
+    inspector.showEmpty();
+    return;
+  }
+  if (userData.kind === 'cluster') {
+    expandedClusters.add(userData.id);
+    rebuildGraph();
+    return;
+  }
+  if (userData.kind === 'host') {
+    setPrimaryFocusAll('host', userData.id);
+    viz.centerOn(userData.id);
+    inspector.showHost(userData.host);
+  } else if (userData.kind === 'flow') {
+    setPrimaryFocusAll('flow', userData.key);
+    viz.centerOn(userData.flow.hostA);
+    inspector.showFlow(userData.flow);
+  }
+}
+
+/** Double-click action: isolates the clicked object's neighborhood (see
+ * pushFocus above) — the actual "traverse the graph database" step. */
+function isolateObject(userData) {
+  if (!userData || userData.kind === 'cluster') return;
+  if (userData.kind === 'host') pushFocus({ kind: 'host', id: userData.id, hops: 1 });
+  else if (userData.kind === 'flow') pushFocus({ kind: 'flow', id: userData.key, hops: 1 });
 }
 
 function renderFocusBar() {
@@ -431,7 +583,7 @@ function renderFocusBar() {
   const crumbs = [`<button class="fb-item" data-focus-idx="-1">All traffic</button>`];
   focusStack.forEach((f, i) => {
     const isLast = i === focusStack.length - 1;
-    const label = f.kind === 'host' ? shortenLabel(f.id) : flowLabel(f.id);
+    const label = f.kind === 'host' ? shortenLabel(f.id) : f.kind === 'stream' ? `\u21c6 Stream: ${flowLabel(f.id)}` : flowLabel(f.id);
     const hopNote = f.hops > 1 ? ` (+${f.hops} hops)` : '';
     crumbs.push(`<span class="fb-sep">\u203a</span>`);
     crumbs.push(
@@ -501,24 +653,6 @@ function renderFindings() {
       }
     });
   });
-}
-
-function handleSelect(userData) {
-  if (!userData) {
-    scene?.clearPrimaryFocus();
-    return;
-  }
-  if (userData.kind === 'cluster') {
-    expandedClusters.add(userData.id);
-    rebuildGraph();
-    return;
-  }
-  if (userData.kind === 'host') {
-    pushFocus({ kind: 'host', id: userData.id, hops: 1 });
-  }
-  if (userData.kind === 'flow') {
-    pushFocus({ kind: 'flow', id: userData.key, hops: 1 });
-  }
 }
 
 function handleHover(userData, event) {

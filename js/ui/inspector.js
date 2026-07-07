@@ -42,12 +42,14 @@ const FIELD_LABELS = {
 };
 
 export class Inspector {
-  constructor(panelEl, breadcrumbEl, { model, onFocusHost, onFocusFlow } = {}) {
+  constructor(panelEl, breadcrumbEl, { model, onFocusHost, onFocusFlow, onFollowStream, onExitStream } = {}) {
     this.panel = panelEl;
     this.breadcrumbEl = breadcrumbEl;
     this.model = model || null;
     this.onFocusHost = onFocusHost || (() => {});
     this.onFocusFlow = onFocusFlow || (() => {});
+    this.onFollowStream = onFollowStream || (() => {});
+    this.onExitStream = onExitStream || (() => {});
     this.stack = [];
     this.filterState = { filterActive: false, activeFlowKeys: null, activePacketIndexSet: null };
     this.showEmpty();
@@ -213,6 +215,7 @@ export class Inspector {
     });
     this.panel.querySelector('#follow-stream-btn')?.addEventListener('click', () => {
       this._navigate({ type: 'stream', data: flow, label: 'Follow stream' }, false);
+      this.onFollowStream(flow);
     });
   }
 
@@ -234,6 +237,10 @@ export class Inspector {
     }
     this.panel.innerHTML = `
       <h3>Follow Stream</h3>
+      <div class="stream-banner">
+        <span>Visualization is isolated to this conversation.</span>
+        <button class="btn btn-ghost" id="exit-stream-btn">\u2715 Exit stream &amp; restore view</button>
+      </div>
       <div class="kv"><span>Conversation</span><b>${escapeHtml(flow.hostA)} \u2194 ${escapeHtml(flow.hostB)}</b></div>
       <div class="kv"><span>Stream index</span><b>${flow.streamIndex ?? '\u2014'}</b></div>
       <div class="kv"><span>Payload shown</span><b>${formatBytes(shownBytes)} across ${Math.min(segments.length, MAX_SEGMENTS)} segments</b></div>
@@ -244,6 +251,7 @@ export class Inspector {
         ${blocks.join('') || '<p class="hint">No decodable application-layer payload was found in this conversation.</p>'}
       </div>
     `;
+    this.panel.querySelector('#exit-stream-btn')?.addEventListener('click', () => this.onExitStream());
   }
 
   _renderPacket(entry) {
@@ -281,6 +289,7 @@ export class Inspector {
     this.panel.querySelector('#follow-stream-btn2')?.addEventListener('click', () => {
       this._navigate({ type: 'flow', data: flow, label: `${shorten(flow.hostA)} \u2194 ${shorten(flow.hostB)}` }, false);
       this._navigate({ type: 'stream', data: flow, label: 'Follow stream' }, false);
+      this.onFollowStream(flow);
     });
   }
 

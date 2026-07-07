@@ -122,9 +122,30 @@ button, input { font-family: inherit; }
   position: absolute;
   inset: 0;
 }
-#scene-container { position: absolute; inset: 0; }
-#scene-container canvas { display: block; cursor: grab; }
-#scene-container canvas:active { cursor: grabbing; }
+.scene-layer { position: absolute; inset: 0; }
+.scene-layer canvas { display: block; cursor: grab; }
+.scene-layer canvas:active { cursor: grabbing; }
+.scene-layer.hidden { display: none; }
+
+.viz-mode-toggle {
+  position: absolute; top: 16px; right: 16px; z-index: 20;
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--bg-panel-glass); backdrop-filter: blur(10px);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.viz-mode-btn {
+  border: none; background: transparent; color: var(--text-dim);
+  font-size: 12.5px; padding: 6px 12px; border-radius: 7px; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.viz-mode-btn:hover { color: var(--text); background: rgba(128,128,128,0.12); }
+.viz-mode-btn.viz-mode-active { background: var(--accent); color: #06090d; font-weight: 600; }
+
+.stream-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: rgba(155,89,182,0.12); border: 1px solid rgba(155,89,182,0.35);
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 12.5px;
+}
 
 .tooltip {
   position: fixed;

@@ -19,14 +19,17 @@ const DIM_OPACITY = 0.08;
 const ACTIVE_OPACITY = 0.9;
 
 export class Scene3D {
-  constructor(container, { onSelect, onHover } = {}) {
+  constructor(container, { onSelect, onHover, onDoubleSelect } = {}) {
     this.container = container;
     this.onSelect = onSelect || (() => {});
     this.onHover = onHover || (() => {});
+    this.onDoubleSelect = onDoubleSelect || (() => {});
     this.showLabels = true;
     this.particlesEnabled = true;
     this.primaryFocus = null; // cosmetic emphasis only — visibility is controlled entirely by setGraph()
     this._flight = null; // active camera fly-to tween, if any
+    this._clickTimer = null; // debounces single- vs double-click so a dblclick doesn't also fire a single select
+    this._dragMoved = false; // suppresses click-to-select when the gesture was actually an orbit drag
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x090d13);
@@ -84,7 +87,19 @@ export class Scene3D {
   _bindEvents() {
     window.addEventListener('resize', () => this.resize());
     this.renderer.domElement.addEventListener('pointermove', (e) => this._onPointerMove(e));
+    this.renderer.domElement.addEventListener('pointerdown', (e) => {
+      this._dragMoved = false;
+      this._isPointerDown = true;
+      this._downPos = { x: e.clientX, y: e.clientY };
+    });
+    window.addEventListener('pointerup', (e) => {
+      this._isPointerDown = false;
+      if (this._downPos && Math.hypot(e.clientX - this._downPos.x, e.clientY - this._downPos.y) > 4) {
+        this._dragMoved = true;
+      }
+    });
     this.renderer.domElement.addEventListener('click', (e) => this._onClick(e));
+    this.renderer.domElement.addEventListener('dblclick', (e) => this._onDoubleClick(e));
   }
 
   resize() {
@@ -145,10 +160,16 @@ export class Scene3D {
     const ids = [...hosts.keys()];
     this.layout = new ForceLayout3D(ids);
     if (previousLayout) {
+      // Carry over prior positions so a filter/focus change re-settles the
+      // existing arrangement rather than reshuffling everything from
+      // scratch — a moderate (not full) reheat is enough to accommodate
+      // whatever edges/nodes actually changed.
+      let anyCarried = false;
       for (const id of ids) {
         const prev = previousLayout.positions.get(id);
-        if (prev) this.layout.positions.set(id, { ...prev });
+        if (prev) { this.layout.positions.set(id, { ...prev }); anyCarried = true; }
       }
+      this.layout.reheat(anyCarried ? 0.5 : 1);
     }
 
     const maxBytes = Math.max(1, ...[...hosts.values()].map((h) => h.bytes));
@@ -271,6 +292,10 @@ export class Scene3D {
     );
   }
 
+  /** Alias kept for parity with Scene2D's API so main.js can drive either
+   * renderer identically. */
+  centerOn(id, duration = 0.9) { this.flyToNode(id, duration); }
+
   _startFlight(camTarget, orbitTarget, duration) {
     this._flight = {
       t: 0,
@@ -313,8 +338,22 @@ export class Scene3D {
   }
 
   _onClick(event) {
+    if (this._dragMoved) return; // was an orbit drag, not an intentional click
     const hit = this._pick();
-    this.onSelect(hit ? hit.userData : null);
+    if (this._clickTimer) clearTimeout(this._clickTimer);
+    // Delay the single-click action briefly so a following dblclick can
+    // cancel it — otherwise every double-click would also fire a spurious
+    // single-select first, which felt disorienting during testing.
+    this._clickTimer = setTimeout(() => {
+      this.onSelect(hit ? hit.userData : null);
+      this._clickTimer = null;
+    }, 220);
+  }
+
+  _onDoubleClick(event) {
+    if (this._clickTimer) { clearTimeout(this._clickTimer); this._clickTimer = null; }
+    const hit = this._pick();
+    if (hit) this.onDoubleSelect(hit.userData);
   }
 
   _pick() {
@@ -332,13 +371,12 @@ export class Scene3D {
     requestAnimationFrame(() => this._animate());
     const dt = Math.min(0.05, this.clock.getDelta());
 
+    if (this.layout && !this.layout.isSettled) {
+      // alpha-decay convergence (see forceLayout.js) — this naturally stops
+      // once the graph settles, rather than running forever every frame.
+      this.layout.tick([...this.edgeLines.values()].map((e) => ({ a: e.flow.hostA, b: e.flow.hostB, weight: e.flow.bytes })));
+    }
     if (this.layout) {
-      // Run the physics a bit faster while the graph first settles, then ease off.
-      const ticks = this.settleTicks < 90 ? 2 : 1;
-      this.settleTicks += 1;
-      for (let i = 0; i < ticks; i++) {
-        this.layout.tick([...this.edgeLines.values()].map((e) => ({ a: e.flow.hostA, b: e.flow.hostB, weight: e.flow.bytes })));
-      }
       for (const [id, mesh] of this.nodeMeshes) {
         const p = this.layout.get(id);
         mesh.position.set(p.x, p.y, p.z);
@@ -373,6 +411,15 @@ export class Scene3D {
       this.camera.lookAt(this.controls.target);
       if (f.t >= 1) this._flight = null;
     } else {
+      // "Zooming should always focus on the selected object": while a node
+      // is selected (and the user isn't mid-drag), keep the orbit target
+      // gently locked onto its live position — so scroll-wheel zoom, which
+      // always dollies toward controls.target, stays centered on it even
+      // as the layout finishes settling.
+      if (this.primaryFocus?.kind === 'host' && !this._isPointerDown) {
+        const p = this.layout?.get(this.primaryFocus.id);
+        if (p) this.controls.target.lerp(new THREE.Vector3(p.x, p.y, p.z), 0.06);
+      }
       // OrbitControls.update() re-derives its internal spherical state from
       // camera.position/controls.target every call. Calling it *during* a
       // programmatic flight (while we're also directly lerping position and

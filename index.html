@@ -45,8 +45,16 @@
 
     <!-- Full-bleed 3D viewport — the "map" -->
     <section id="viewer">
-      <div id="scene-container"></div>
+      <div id="scene-container-3d" class="scene-layer"></div>
+      <div id="scene-container-2d" class="scene-layer hidden"></div>
       <div id="tooltip" class="tooltip"></div>
+
+      <!-- Google-Maps-style layer switcher: 3D (force-directed) vs 2D (radial,
+           readability-optimized) — preference is remembered between sessions. -->
+      <div id="viz-mode-toggle" class="viz-mode-toggle" role="group" aria-label="Visualization mode">
+        <button id="viz-mode-3d-btn" class="viz-mode-btn viz-mode-active" data-mode="3d">◈ 3D</button>
+        <button id="viz-mode-2d-btn" class="viz-mode-btn" data-mode="2d">▦ 2D</button>
+      </div>
 
       <!-- Floating top-center filter bar (Google Maps search-bar style) -->
       <div id="filter-bar" class="floating-bar">
