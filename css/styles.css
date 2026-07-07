@@ -659,3 +659,8 @@ button, input { font-family: inherit; }
 .stream-a-color { color: #4d9de0; }
 .stream-b-color { color: #e9b44c; }
 .expert-list { margin-bottom: 8px; }
+
+@media (max-width: 900px) {
+  .floating-bar { width: min(520px, 72vw); }
+  .viz-mode-toggle { top: 64px; }
+}
