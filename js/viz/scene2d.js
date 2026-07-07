@@ -16,11 +16,13 @@ const DIM_ALPHA = 0.12;
 const ACTIVE_ALPHA = 0.95;
 
 export class Scene2D {
-  constructor(container, { onSelect, onHover, onDoubleSelect } = {}) {
+  constructor(container, { onSelect, onHover, onDoubleSelect, onError } = {}) {
     this.container = container;
     this.onSelect = onSelect || (() => {});
     this.onHover = onHover || (() => {});
     this.onDoubleSelect = onDoubleSelect || (() => {});
+    this.onError = onError || (() => {});
+    this._renderFailed = false;
     this.showLabels = true;
     this.particlesEnabled = true;
     this.primaryFocus = null;
@@ -52,6 +54,10 @@ export class Scene2D {
     this._bindEvents();
     this.resize();
     this._animate();
+    if (typeof ResizeObserver !== 'undefined') {
+      this._resizeObserver = new ResizeObserver(() => this.resize());
+      this._resizeObserver.observe(this.container);
+    }
   }
 
   _bindEvents() {
@@ -224,6 +230,17 @@ export class Scene2D {
 
   _animate() {
     requestAnimationFrame(() => this._animate());
+    if (this._renderFailed) return;
+    try {
+      this._tick();
+    } catch (err) {
+      this._renderFailed = true;
+      console.error('[PacketVerse] 2D render loop failed:', err);
+      this.onError(err, '2d');
+    }
+  }
+
+  _tick() {
     const dt = 0.016;
     this._particleT = (this._particleT + dt * 0.35) % 1;
 

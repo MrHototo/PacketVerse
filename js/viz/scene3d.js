@@ -19,11 +19,13 @@ const DIM_OPACITY = 0.08;
 const ACTIVE_OPACITY = 0.9;
 
 export class Scene3D {
-  constructor(container, { onSelect, onHover, onDoubleSelect } = {}) {
+  constructor(container, { onSelect, onHover, onDoubleSelect, onError } = {}) {
     this.container = container;
     this.onSelect = onSelect || (() => {});
     this.onHover = onHover || (() => {});
     this.onDoubleSelect = onDoubleSelect || (() => {});
+    this.onError = onError || (() => {});
+    this._renderFailed = false; // once true, stop trying every frame (avoids console/error-banner spam)
     this.showLabels = true;
     this.particlesEnabled = true;
     this.primaryFocus = null; // cosmetic emphasis only — visibility is controlled entirely by setGraph()
@@ -74,6 +76,17 @@ export class Scene3D {
     this._bindEvents();
     this._animate();
     this.resize();
+    // Defensive: re-sync the renderer's size whenever the container's actual
+    // box changes for ANY reason — becoming visible after being display:none
+    // (e.g. switching modes), a panel collapsing/expanding, a window resize
+    // that the `window resize` listener alone might miss, etc. This is what
+    // actually eliminates the whole "blank 0x0 canvas" failure class, rather
+    // than relying on every call site to remember to call resize() at the
+    // exact right moment.
+    if (typeof ResizeObserver !== 'undefined') {
+      this._resizeObserver = new ResizeObserver(() => this.resize());
+      this._resizeObserver.observe(this.container);
+    }
   }
 
   _setupComposer() {
@@ -369,6 +382,17 @@ export class Scene3D {
 
   _animate() {
     requestAnimationFrame(() => this._animate());
+    if (this._renderFailed) return; // a prior frame already threw; don't spam errors forever
+    try {
+      this._tick();
+    } catch (err) {
+      this._renderFailed = true;
+      console.error('[PacketVerse] 3D render loop failed:', err);
+      this.onError(err, '3d');
+    }
+  }
+
+  _tick() {
     const dt = Math.min(0.05, this.clock.getDelta());
 
     if (this.layout && !this.layout.isSettled) {

@@ -42,6 +42,9 @@ const els = {
   sceneContainer2d: document.getElementById('scene-container-2d'),
   vizMode3dBtn: document.getElementById('viz-mode-3d-btn'),
   vizMode2dBtn: document.getElementById('viz-mode-2d-btn'),
+  renderErrorBanner: document.getElementById('render-error-banner'),
+  renderErrorDetail: document.getElementById('render-error-detail'),
+  renderErrorDismiss: document.getElementById('render-error-dismiss'),
   timelineCanvas: document.getElementById('timeline-canvas'),
   timelineWrap: document.getElementById('timeline-wrap'),
   search: document.getElementById('search-input'),
@@ -205,6 +208,15 @@ function init() {
   renderLegend();
 }
 
+function showRenderError(err, which) {
+  if (!els.renderErrorBanner) return;
+  els.renderErrorDetail.textContent = `[${which}] ${err?.message || err}`;
+  els.renderErrorBanner.classList.remove('hidden');
+}
+els.renderErrorDismiss?.addEventListener('click', () => {
+  els.renderErrorBanner.classList.add('hidden');
+});
+
 function togglePanel(side) {
   const drawer = side === 'left' ? els.sidebarLeft : els.sidebarRight;
   const tab = side === 'left' ? els.toggleLeftPanel : els.toggleRightPanel;
@@ -242,15 +254,27 @@ function finishLoad(rawPackets, decoded, label) {
   els.app.classList.add('loaded');
 
   if (!scene3d) {
-    scene3d = new Scene3D(els.sceneContainer3d, {
-      onSelect: selectObject,
-      onDoubleSelect: isolateObject,
-      onHover: handleHover,
-    });
+    try {
+      scene3d = new Scene3D(els.sceneContainer3d, {
+        onSelect: selectObject,
+        onDoubleSelect: isolateObject,
+        onHover: handleHover,
+        onError: showRenderError,
+      });
+    } catch (err) {
+      // Most likely cause: no WebGL support/context available in this browser
+      // environment. Rather than leaving the whole app dead, fall back to the
+      // 2D (plain Canvas2D, no WebGL required) view automatically.
+      console.error('[PacketVerse] 3D initialization failed, falling back to 2D:', err);
+      scene3d = null;
+      vizMode = '2d';
+      showRenderError(err, '3d-init');
+    }
     scene2d = new Scene2D(els.sceneContainer2d, {
       onSelect: selectObject,
       onDoubleSelect: isolateObject,
       onHover: handleHover,
+      onError: showRenderError,
     });
     applyVizModeUI(false);
   }

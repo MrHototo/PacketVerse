@@ -128,7 +128,9 @@ button, input { font-family: inherit; }
 .scene-layer.hidden { display: none; }
 
 .viz-mode-toggle {
-  position: absolute; top: 16px; right: 16px; z-index: 20;
+  /* z-index set far above every floating drawer/panel (max elsewhere is ~60) so it can
+     never be visually covered, regardless of viewport width or drawer state. */
+  position: absolute; top: 16px; right: 16px; z-index: 500;
   display: flex; gap: 2px; padding: 3px;
   background: var(--bg-panel-glass); backdrop-filter: blur(10px);
   border: 1px solid var(--border); border-radius: 10px;
@@ -664,3 +666,22 @@ button, input { font-family: inherit; }
   .floating-bar { width: min(520px, 72vw); }
   .viz-mode-toggle { top: 64px; }
 }
+
+
+/* ---------- Fatal render-error banner (shown if 3D/2D rendering throws) ---------- */
+.render-error-banner {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  z-index: 400; max-width: 480px; text-align: center;
+  background: var(--bg-panel-glass); backdrop-filter: blur(10px);
+  border: 1px solid var(--danger); border-radius: var(--radius);
+  padding: 20px 24px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+}
+.render-error-banner.hidden { display: none; }
+.render-error-banner h4 { margin: 0 0 8px; color: var(--danger); font-size: 14px; }
+.render-error-banner p { margin: 4px 0; font-size: 12.5px; color: var(--text-dim); }
+.render-error-banner code {
+  display: block; margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.3);
+  border-radius: 6px; font-size: 11px; color: var(--text); white-space: pre-wrap; text-align: left;
+  max-height: 120px; overflow-y: auto;
+}
+.render-error-banner button { margin-top: 12px; }

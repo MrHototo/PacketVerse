@@ -49,6 +49,15 @@
       <div id="scene-container-2d" class="scene-layer hidden"></div>
       <div id="tooltip" class="tooltip"></div>
 
+      <!-- Shown if the 3D/2D renderer fails to initialize or a render-loop
+           error occurs, instead of silently leaving a blank viewport. -->
+      <div id="render-error-banner" class="render-error-banner hidden">
+        <h4>⚠ Visualization failed to render</h4>
+        <p>Something went wrong drawing the graph. Your capture data is still loaded — try switching view modes below, or reload the page.</p>
+        <code id="render-error-detail"></code>
+        <button id="render-error-dismiss" class="btn btn-ghost">Dismiss</button>
+      </div>
+
       <!-- Google-Maps-style layer switcher: 3D (force-directed) vs 2D (radial,
            readability-optimized) — preference is remembered between sessions. -->
       <div id="viz-mode-toggle" class="viz-mode-toggle" role="group" aria-label="Visualization mode">
