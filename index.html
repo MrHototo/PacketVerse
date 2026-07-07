@@ -75,11 +75,26 @@
           <li><code>ip.addr ~ /^10\./</code> — regex match</li>
           <li><code>dns and udp.port==53</code>, <code>(tls or http) and bytes>1000</code></li>
           <li><code>not arp</code>, <code>!broadcast</code></li>
+          <li><code>http.request.uri contains "login"</code> — substring match</li>
+          <li><code>ip.addr matches "^10\\."</code> — <code>matches</code> is an alias for <code>~</code></li>
+          <li><code>tcp.dstport in {80, 443, 8443}</code> — set membership</li>
+          <li><code>tcp.analysis.retransmission</code>, <code>tcp.analysis.duplicate_ack</code>, <code>tcp.stream==2</code></li>
+          <li><code>tls.handshake.ciphersuite</code>, <code>tls.cert.subject</code>, <code>http.host</code>, <code>http.response.code==404</code></li>
         </ul>
         <p class="hint">Plain text with no operators falls back to a simple substring search. Press Enter to snap the camera to the filtered results.</p>
       </div>
 
       <div class="chip-row-floating" id="preset-chips"></div>
+
+      <!-- Focus / ego-network breadcrumb — appears once the user clicks into a node,
+           showing the drill-down path and letting them expand outward or exit back
+           to the full (filtered) graph, graph-database-traversal style. -->
+      <div id="focus-bar" class="floating-bar focus-bar hidden">
+        <span class="filter-icon">⌖</span>
+        <div id="focus-breadcrumb" class="focus-breadcrumb"></div>
+        <button id="expand-focus-btn" class="btn btn-ghost" title="Reveal one more hop of context outward">+ Expand context</button>
+        <button id="exit-focus-btn" class="btn btn-ghost">Exit focus — show all</button>
+      </div>
 
       <!-- Floating zoom / camera controls, bottom-right -->
       <div id="zoom-controls" class="zoom-controls">
@@ -133,9 +148,18 @@
           <div id="legend-panel" class="legend"></div>
         </div>
         <div class="panel-block">
-          <h4>Dashboard</h4>
+          <h4>Statistics</h4>
           <p class="hint">Click a host or protocol to filter the graph to it.</p>
-          <div id="dashboard-panel"></div>
+          <div class="tab-row" id="stats-tabs">
+            <button class="tab-btn tab-active" data-tab="overview">Overview</button>
+            <button class="tab-btn" data-tab="conversations">Conversations</button>
+            <button class="tab-btn" data-tab="endpoints">Endpoints</button>
+            <button class="tab-btn" data-tab="names">Name Resolution</button>
+          </div>
+          <div id="dashboard-panel" class="tab-pane tab-pane-active" data-pane="overview"></div>
+          <div id="conversations-panel" class="tab-pane" data-pane="conversations"></div>
+          <div id="endpoints-panel" class="tab-pane" data-pane="endpoints"></div>
+          <div id="names-panel" class="tab-pane" data-pane="names"></div>
         </div>
       </div>
     </aside>

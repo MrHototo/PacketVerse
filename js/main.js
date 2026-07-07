@@ -2,20 +2,27 @@
  * main.js
  * Application entry point: wires file upload/parsing, the graph model,
  * clustering, the 3D scene, timeline, filters, packet list, inspector,
- * dashboard, and security findings together. Everything runs client-side.
+ * dashboard/statistics, and security findings together. Everything runs
+ * client-side.
  *
- * Filtering model: the filter bar compiles a predicate evaluated per
- * PACKET (Wireshark-display-filter granularity). Every refresh, we compute
- * the filtered packet set, derive which raw flows they belong to, map those
- * to the (possibly clustered) display-graph flow keys, and use that single
- * "active set" to drive the 3D scene, the packet list, the dashboard, and
- * the inspector's drill-down lists — so one filter genuinely narrows down
- * every view at once instead of just dimming the 3D scene.
+ * Two independent, composable narrowing mechanisms drive what's actually
+ * rendered and listed everywhere in the app:
+ *   1. FILTER — a Wireshark-style display filter (filterBar), evaluated per
+ *      packet, that defines "the matching subset of the whole capture."
+ *   2. FOCUS — an ego-network selection (focusStack) entered by clicking a
+ *      host/flow in the 3D scene, that progressively reveals only the
+ *      directly-related neighborhood (N hops out) instead of the whole graph.
+ * The *intersection* of these two (computeVisibleGraph) is what's actually
+ * pushed into the 3D scene via scene.setGraph() — a genuine rebuild, not a
+ * dim/hide overlay — and the same intersection also drives the packet list,
+ * inspector drill-down lists, and every statistics tab, so one action
+ * narrows the whole app consistently, like navigating a graph database.
  */
 import { parseCapture } from './pcap/pcapParser.js';
 import { decodeFrame } from './pcap/protocolDecoder.js';
 import { buildGraphModel, flowsInRange } from './pcap/graphModel.js';
 import { computeDisplayGraph } from './pcap/clustering.js';
+import { computeEgoNetwork } from './pcap/egoNetwork.js';
 import { runSecurityChecks } from './pcap/securityEngine.js';
 import { Scene3D } from './viz/scene3d.js';
 import { Timeline } from './ui/timeline.js';
@@ -23,6 +30,7 @@ import { FilterBar } from './ui/filters.js';
 import { Inspector } from './ui/inspector.js';
 import { PacketList } from './ui/packetList.js';
 import { renderDashboard } from './ui/dashboard.js';
+import { renderConversations, renderEndpoints, renderNameResolution } from './ui/statsPanel.js';
 import { PROTOCOL_COLORS, hexToCss } from './utils/colors.js';
 
 const els = {
@@ -38,6 +46,10 @@ const els = {
   inspectorPanel: document.getElementById('inspector-panel'),
   inspectorBreadcrumb: document.getElementById('inspector-breadcrumb'),
   dashboardPanel: document.getElementById('dashboard-panel'),
+  conversationsPanel: document.getElementById('conversations-panel'),
+  endpointsPanel: document.getElementById('endpoints-panel'),
+  namesPanel: document.getElementById('names-panel'),
+  statsTabs: document.getElementById('stats-tabs'),
   findingsPanel: document.getElementById('findings-panel'),
   tooltip: document.getElementById('tooltip'),
   fileMeta: document.getElementById('file-meta'),
@@ -66,6 +78,10 @@ const els = {
   packetListContainer: document.getElementById('packet-list'),
   collapsePacketListBtn: document.getElementById('collapse-packetlist-btn'),
   filterStatus: document.getElementById('filter-status'),
+  focusBar: document.getElementById('focus-bar'),
+  focusBreadcrumb: document.getElementById('focus-breadcrumb'),
+  expandFocusBtn: document.getElementById('expand-focus-btn'),
+  exitFocusBtn: document.getElementById('exit-focus-btn'),
 };
 
 let model = null;
@@ -78,19 +94,23 @@ let currentRange = null;
 let displayGraph = null;
 const expandedClusters = new Set();
 
+// The ego-network navigation stack. Each entry: { kind: 'host'|'flow', id, hops }.
+// Empty stack = "no focus", i.e. show the whole (filtered) graph.
+let focusStack = [];
+
 init();
 
 function init() {
   inspector = new Inspector(els.inspectorPanel, els.inspectorBreadcrumb, {
-    onFocusHost: (host) => scene?.focusOn('host', host.id),
-    onFocusFlow: (flow) => scene?.focusOn('flow', flow.key),
+    onFocusHost: (host) => pushFocus({ kind: 'host', id: host.id, hops: 1 }),
+    onFocusFlow: (flow) => pushFocus({ kind: 'flow', id: flow.key, hops: 1 }),
   });
 
   packetList = new PacketList(els.packetListContainer, {
     onSelectPacket: (entry) => {
       inspector.showPacket(entry);
       const displayKey = displayGraph?.rawFlowKeyToDisplayKey?.get(entry.flowKey);
-      if (displayKey) scene?.focusOn('flow', displayKey);
+      if (displayKey) scene?.setPrimaryFocus('flow', displayKey);
     },
   });
 
@@ -136,11 +156,10 @@ function init() {
 
   els.zoomInBtn?.addEventListener('click', () => scene?.zoomIn());
   els.zoomOutBtn?.addEventListener('click', () => scene?.zoomOut());
-  els.resetViewBtn?.addEventListener('click', () => scene?.resetCamera());
-  els.clearFocusBtn?.addEventListener('click', () => {
-    scene?.clearFocus();
-    inspector?.showEmpty();
-  });
+  els.resetViewBtn?.addEventListener('click', () => scene?.resetCamera(true));
+  els.clearFocusBtn?.addEventListener('click', () => exitFocus());
+  els.exitFocusBtn?.addEventListener('click', () => exitFocus());
+  els.expandFocusBtn?.addEventListener('click', () => expandFocus());
   els.toggleLabels?.addEventListener('change', (e) => scene?.setLabelsVisible(e.target.checked));
   els.toggleParticles?.addEventListener('change', (e) => scene?.setParticlesEnabled(e.target.checked));
 
@@ -161,6 +180,14 @@ function init() {
   });
   els.collapsePacketListBtn?.addEventListener('click', () => {
     els.packetListWrap.classList.toggle('packetlist-collapsed');
+  });
+
+  els.statsTabs?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn) return;
+    const tab = btn.dataset.tab;
+    els.statsTabs.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('tab-active', b === btn));
+    document.querySelectorAll('.tab-pane').forEach((p) => p.classList.toggle('tab-pane-active', p.dataset.pane === tab));
   });
 
   renderLegend();
@@ -196,6 +223,7 @@ function finishLoad(rawPackets, decoded, label) {
   model = buildGraphModel(rawPackets, decoded);
   currentRange = { ...model.timeRange };
   expandedClusters.clear();
+  focusStack = [];
 
   els.fileMeta.textContent = `${label} — ${model.packets.length.toLocaleString()} packets, ${model.hosts.size} hosts, ${model.flows.size} conversations`;
   showProgress(null);
@@ -223,14 +251,14 @@ function finishLoad(rawPackets, decoded, label) {
   });
 
   rebuildGraph();
-  scene.resetCamera();
+  scene.resetCamera(false);
 }
 
-/** Recomputes the (possibly clustered) display graph and pushes it into the 3D scene. */
+/** Recomputes the (possibly clustered) display graph from the full model.
+ * This is the "base" graph before filter/focus narrowing is applied. */
 function rebuildGraph() {
   if (!model) return;
   displayGraph = computeDisplayGraph(model.hosts, model.flows, expandedClusters);
-  scene.setGraph(displayGraph.hosts, displayGraph.flows);
 
   const protocolCounts = {};
   for (const f of model.flows.values()) {
@@ -242,6 +270,15 @@ function rebuildGraph() {
   refreshViews();
 }
 
+/**
+ * The core narrowing pipeline. Computes:
+ *   1. The packet-level filter match set (within the current time range).
+ *   2. The display-graph subset (hosts/flows) that filter set maps onto.
+ *   3. If a focus is active, the ego-network subset of THAT within N hops.
+ * Then pushes the final result into the 3D scene (a real rebuild) and every
+ * other view (packet list, inspector, dashboard, stats tabs) so they all
+ * agree on "what's currently in view."
+ */
 function refreshViews() {
   if (!model || !displayGraph) return;
 
@@ -251,66 +288,191 @@ function refreshViews() {
   const filterActive = filterBar.isActive();
   const filteredPackets = filterActive ? inRangePackets.filter((p) => filterBar.matchesPacket(p)) : inRangePackets;
 
-  // Derive which raw flows the filtered packets belong to, then map those
-  // onto the (possibly clustered) display-graph flow keys.
+  // Which raw flows survive the filter, mapped onto (possibly clustered) display-graph keys.
   const activeRawFlowKeys = new Set();
-  const activePacketIndexSet = new Set();
   for (const p of filteredPackets) {
     if (p.flowKey) activeRawFlowKeys.add(p.flowKey);
-    activePacketIndexSet.add(p.index);
   }
-  const effectiveDisplayKeys = new Set();
+  const filteredDisplayKeys = new Set();
   for (const rawKey of activeRawFlowKeys) {
     const dk = displayGraph.rawFlowKeyToDisplayKey.get(rawKey);
-    if (dk) effectiveDisplayKeys.add(dk);
+    if (dk) filteredDisplayKeys.add(dk);
   }
 
-  scene.setActivity(effectiveDisplayKeys, filterActive);
-
-  const filteredHosts = new Map();
-  const filteredFlowMap = new Map();
-  for (const [key, flow] of displayGraph.flows) {
-    if (!filterActive || effectiveDisplayKeys.has(key)) {
-      filteredFlowMap.set(key, flow);
+  let filteredHosts, filteredFlows;
+  if (!filterActive) {
+    filteredHosts = displayGraph.hosts;
+    filteredFlows = displayGraph.flows;
+  } else {
+    filteredFlows = new Map();
+    filteredHosts = new Map();
+    for (const [key, flow] of displayGraph.flows) {
+      if (!filteredDisplayKeys.has(key)) continue;
+      filteredFlows.set(key, flow);
       if (displayGraph.hosts.has(flow.hostA)) filteredHosts.set(flow.hostA, displayGraph.hosts.get(flow.hostA));
       if (displayGraph.hosts.has(flow.hostB)) filteredHosts.set(flow.hostB, displayGraph.hosts.get(flow.hostB));
     }
   }
 
-  inspector.setFilterState({ filterActive, activeFlowKeys: activeRawFlowKeys, activePacketIndexSet });
-  packetList.setPackets(filteredPackets, model.timeRange.start);
-  updateFilterStatus(filterActive, filteredPackets.length, inRangePackets.length);
+  // Ego-network focus narrows the filtered subgraph further (intersection, not replacement) —
+  // clicking into a node while a filter is active stays consistent with that filter.
+  const focus = focusStack[focusStack.length - 1] || null;
+  let visibleHosts = filteredHosts;
+  let visibleFlows = filteredFlows;
+  if (focus) {
+    const focusHostIds = focus.kind === 'host'
+      ? [focus.id]
+      : (() => {
+          const f = filteredFlows.get(focus.id) || displayGraph.flows.get(focus.id);
+          return f ? [f.hostA, f.hostB] : [];
+        })();
+    const ego = computeEgoNetwork(filteredHosts, filteredFlows, focusHostIds, focus.hops);
+    visibleHosts = ego.hosts;
+    visibleFlows = ego.flows;
+  }
+
+  scene.setGraph(visibleHosts, visibleFlows);
+  renderFocusBar();
+
+  // Every other view (packet list, inspector, dashboard, stats tabs) reflects
+  // this exact same visible set, so nothing disagrees with the 3D scene.
+  const visibleDisplayKeySet = new Set(visibleFlows.keys());
+  const anyNarrowing = filterActive || !!focus;
+  const visiblePackets = anyNarrowing
+    ? filteredPackets.filter((p) => {
+        const dk = displayGraph.rawFlowKeyToDisplayKey.get(p.flowKey);
+        return dk ? visibleDisplayKeySet.has(dk) : !focus; // packets with no flow (rare) stay visible unless focus-narrowed
+      })
+    : filteredPackets;
+
+  const visibleRawFlowKeys = new Set();
+  const visiblePacketIndexSet = new Set();
+  for (const p of visiblePackets) {
+    if (p.flowKey) visibleRawFlowKeys.add(p.flowKey);
+    visiblePacketIndexSet.add(p.index);
+  }
+
+  inspector.setFilterState({ filterActive: anyNarrowing, activeFlowKeys: visibleRawFlowKeys, activePacketIndexSet: visiblePacketIndexSet });
+  packetList.setPackets(visiblePackets, model.timeRange.start);
+  updateFilterStatus(filterActive, filteredPackets.length, inRangePackets.length, focus, visibleHosts.size);
 
   renderDashboard(
     els.dashboardPanel,
-    {
-      hosts: filteredHosts.size || filterActive ? filteredHosts : displayGraph.hosts,
-      flows: filteredFlowMap.size || filterActive ? filteredFlowMap : displayGraph.flows,
-      packets: filteredPackets,
-    },
+    { hosts: visibleHosts, flows: visibleFlows, packets: visiblePackets },
     {
       onSelectHost: (hostId) => {
-        filterBar.setTerm(`ip.addr==${hostId}`);
-        const host = displayGraph.hosts.get(hostId);
-        if (host) {
-          scene.focusOn('host', hostId);
-          inspector.showHost(host);
-        }
+        const host = visibleHosts.get(hostId) || displayGraph.hosts.get(hostId);
+        if (host) pushFocus({ kind: 'host', id: hostId, hops: 1 });
       },
       onSelectProtocol: (proto) => filterBar.appendTerm(proto),
     }
   );
+  renderConversations(els.conversationsPanel, visibleFlows, {
+    onSelectFlow: (flow) => pushFocus({ kind: 'flow', id: flow.key, hops: 1 }),
+  });
+  renderEndpoints(els.endpointsPanel, visibleHosts, {
+    onSelectHost: (hostId) => pushFocus({ kind: 'host', id: hostId, hops: 1 }),
+  });
+  renderNameResolution(els.namesPanel, model.nameTable);
 }
 
-function updateFilterStatus(filterActive, matched, total) {
+// ---------------------------------------------------------------------------
+// Ego-network focus stack: push (click into a node), expand (+1 hop),
+// pop/exit (breadcrumb navigation) — this is the "graph database traversal"
+// navigation model, replacing the old dim-everything-else approach.
+// ---------------------------------------------------------------------------
+
+function pushFocus(entry) {
+  focusStack.push(entry);
+  refreshViews();
+  scene.setPrimaryFocus(entry.kind, entry.id);
+  const centerId = entry.kind === 'host' ? entry.id : (displayGraph.flows.get(entry.id)?.hostA ?? null);
+  scene.flyToNode(centerId);
+  const host = displayGraph?.hosts.get(entry.kind === 'host' ? entry.id : '');
+  if (entry.kind === 'host' && host) inspector.showHost(host);
+  else if (entry.kind === 'flow') {
+    const flow = displayGraph?.flows.get(entry.id);
+    if (flow) inspector.showFlow(flow);
+  }
+}
+
+function expandFocus() {
+  const top = focusStack[focusStack.length - 1];
+  if (!top) return;
+  top.hops += 1;
+  refreshViews();
+  scene.fitToVisible();
+}
+
+function popFocusTo(index) {
+  focusStack = focusStack.slice(0, index + 1);
+  refreshViews();
+  scene.fitToVisible();
+}
+
+function exitFocus() {
+  if (!focusStack.length) {
+    scene?.clearPrimaryFocus();
+    inspector.showEmpty();
+    return;
+  }
+  focusStack = [];
+  refreshViews();
+  scene.fitToVisible();
+}
+
+function renderFocusBar() {
+  if (!els.focusBar) return;
+  if (!focusStack.length) {
+    els.focusBar.classList.add('hidden');
+    return;
+  }
+  els.focusBar.classList.remove('hidden');
+  const crumbs = [`<button class="fb-item" data-focus-idx="-1">All traffic</button>`];
+  focusStack.forEach((f, i) => {
+    const isLast = i === focusStack.length - 1;
+    const label = f.kind === 'host' ? shortenLabel(f.id) : flowLabel(f.id);
+    const hopNote = f.hops > 1 ? ` (+${f.hops} hops)` : '';
+    crumbs.push(`<span class="fb-sep">\u203a</span>`);
+    crumbs.push(
+      isLast
+        ? `<span class="fb-item fb-current">${escapeHtml(label)}${hopNote}</span>`
+        : `<button class="fb-item" data-focus-idx="${i}">${escapeHtml(label)}</button>`
+    );
+  });
+  els.focusBreadcrumb.innerHTML = crumbs.join('');
+  els.focusBreadcrumb.querySelectorAll('[data-focus-idx]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.focusIdx);
+      if (idx < 0) exitFocus();
+      else popFocusTo(idx);
+    });
+  });
+}
+
+function shortenLabel(id) {
+  return id.length > 24 ? id.slice(0, 22) + '\u2026' : id;
+}
+function flowLabel(flowKey) {
+  const flow = displayGraph?.flows.get(flowKey);
+  return flow ? `${shortenLabel(flow.hostA)} \u2194 ${shortenLabel(flow.hostB)}` : flowKey;
+}
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function updateFilterStatus(filterActive, matched, total, focus, visibleHostCount) {
   if (!els.filterStatus) return;
-  if (!filterActive) {
+  if (!filterActive && !focus) {
     els.filterStatus.textContent = '';
     els.filterStatus.classList.add('hidden');
     return;
   }
   els.filterStatus.classList.remove('hidden');
-  els.filterStatus.textContent = `Showing ${matched.toLocaleString()} of ${total.toLocaleString()} packets in range`;
+  const parts = [];
+  if (filterActive) parts.push(`Showing ${matched.toLocaleString()} of ${total.toLocaleString()} packets in range`);
+  if (focus) parts.push(`focused on ${visibleHostCount.toLocaleString()} host${visibleHostCount === 1 ? '' : 's'} within ${focus.hops} hop${focus.hops === 1 ? '' : 's'}`);
+  els.filterStatus.textContent = parts.join(' \u00b7 ');
 }
 
 function renderFindings() {
@@ -335,8 +497,7 @@ function renderFindings() {
       const finding = findings[i];
       const hostId = finding.affected?.[0];
       if (hostId && displayGraph?.hosts.has(hostId)) {
-        scene.focusOn('host', hostId);
-        inspector.showHost(displayGraph.hosts.get(hostId));
+        pushFocus({ kind: 'host', id: hostId, hops: 1 });
       }
     });
   });
@@ -344,8 +505,7 @@ function renderFindings() {
 
 function handleSelect(userData) {
   if (!userData) {
-    scene?.clearFocus();
-    inspector.showEmpty();
+    scene?.clearPrimaryFocus();
     return;
   }
   if (userData.kind === 'cluster') {
@@ -354,12 +514,10 @@ function handleSelect(userData) {
     return;
   }
   if (userData.kind === 'host') {
-    scene?.focusOn('host', userData.id);
-    inspector.showHost(userData.host);
+    pushFocus({ kind: 'host', id: userData.id, hops: 1 });
   }
   if (userData.kind === 'flow') {
-    scene?.focusOn('flow', userData.key);
-    inspector.showFlow(userData.flow);
+    pushFocus({ kind: 'flow', id: userData.key, hops: 1 });
   }
 }
 
@@ -372,9 +530,9 @@ function handleHover(userData, event) {
   if (userData.kind === 'cluster') {
     text = `${userData.host.id.replace('cluster:', '')} — ${userData.host.memberIds?.length ?? 0} hosts (click to expand)`;
   } else if (userData.kind === 'host') {
-    text = `${userData.host.id} — ${userData.host.packets} pkts`;
+    text = `${userData.host.id} — ${userData.host.packets} pkts (click to focus)`;
   } else {
-    text = `${userData.flow.hostA} \u2194 ${userData.flow.hostB} (${userData.flow.protocol})`;
+    text = `${userData.flow.hostA} \u2194 ${userData.flow.hostB} (${userData.flow.protocol}) — click to focus`;
   }
   els.tooltip.textContent = text;
   els.tooltip.style.display = 'block';
@@ -392,9 +550,6 @@ function showProgress(fraction) {
   els.progressBar.style.width = `${Math.round(fraction * 100)}%`;
 }
 
-/** Generates a small synthetic capture in-memory so the app is explorable
- * without needing a real .pcap file on hand — useful for first-time users
- * and for the GitHub Pages demo. */
 function loadSyntheticDemo() {
   const { packets, decoded } = buildSyntheticCapture();
   finishLoad(packets, decoded, 'Synthetic demo capture');

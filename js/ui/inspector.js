@@ -10,6 +10,7 @@
  */
 import { toHex, toAscii, formatBytes, formatTimestamp } from '../utils/bytes.js';
 import { explainFlow, explainPacket } from './explainer.js';
+import { reassembleStream } from '../pcap/streamAnalysis.js';
 
 const SKIP_FIELDS = new Set(['type', 'headerEnd', 'protoNum']);
 
@@ -28,6 +29,16 @@ const FIELD_LABELS = {
   queryType: 'Query Type', qdCount: 'Questions', anCount: 'Answers',
   handshakeType: 'Handshake Type', version: 'Record Version', serverName: 'Server Name (SNI)',
   method: 'Method',
+  contentTypeName: 'Content Type', clientVersion: 'Client Version', negotiatedVersion: 'Negotiated Version',
+  cipherSuiteCount: 'Cipher Suites Offered', recordVersion: 'Record Version (raw)',
+  isResponse: 'Is Response', authoritative: 'Authoritative Answer', truncated: 'Truncated (TC)',
+  recursionDesired: 'Recursion Desired (RD)', recursionAvailable: 'Recursion Available (RA)',
+  rcodeName: 'Response Code', queryType: 'Query Type', queryClass: 'Query Class',
+  nsCount: 'Authority Records', arCount: 'Additional Records', opcode: 'Opcode',
+  isRequest: 'Is Request', path: 'Request URI', httpVersion: 'HTTP Version',
+  statusCode: 'Status Code', statusText: 'Status Text', host: 'Host', userAgent: 'User-Agent',
+  contentType: 'Content-Type', contentLength: 'Content-Length', server: 'Server',
+  messageType: 'Message Type', clientIp: 'Client IP', yourIp: 'Your (Client) IP',
 };
 
 export class Inspector {
@@ -207,28 +218,28 @@ export class Inspector {
 
   _renderStream(flow) {
     const packets = this._packetsForFlow(flow);
+    const isTcp = flow.protocol === 'TCP';
+    const segments = reassembleStream(packets, flow);
     const blocks = [];
     let shownBytes = 0;
-    const MAX_PACKETS = 400;
-    for (const p of packets.slice(0, MAX_PACKETS)) {
-      const offset = p.frame.payloadOffset;
-      if (offset == null || offset >= p.data.length) continue;
-      const payload = p.data.slice(offset);
-      if (!payload.length) continue;
-      const isAtoB = p.frame.endpointA === flow.hostA;
-      const ascii = toAscii(payload).slice(0, 2000);
-      shownBytes += payload.length;
+    const MAX_SEGMENTS = 400;
+    for (const seg of segments.slice(0, MAX_SEGMENTS)) {
+      const ascii = toAscii(seg.payload).slice(0, 2000);
+      shownBytes += seg.payload.length;
       blocks.push(`
-        <div class="stream-block ${isAtoB ? 'stream-a' : 'stream-b'}">
-          <div class="stream-meta">#${p.index + 1} \u00b7 ${isAtoB ? escapeHtml(shorten(flow.hostA)) + ' \u2192 ' + escapeHtml(shorten(flow.hostB)) : escapeHtml(shorten(flow.hostB)) + ' \u2192 ' + escapeHtml(shorten(flow.hostA))} \u00b7 ${payload.length}B</div>
-          <pre class="stream-payload">${escapeHtml(ascii)}${payload.length > 2000 ? '\u2026' : ''}</pre>
+        <div class="stream-block ${seg.isAtoB ? 'stream-a' : 'stream-b'}">
+          <div class="stream-meta">#${seg.index + 1} \u00b7 ${seg.isAtoB ? escapeHtml(shorten(flow.hostA)) + ' \u2192 ' + escapeHtml(shorten(flow.hostB)) : escapeHtml(shorten(flow.hostB)) + ' \u2192 ' + escapeHtml(shorten(flow.hostA))} \u00b7 ${seg.payload.length}B${isTcp ? ' \u00b7 seq ' + seg.seq : ''}</div>
+          <pre class="stream-payload">${escapeHtml(ascii)}${seg.payload.length > 2000 ? '\u2026' : ''}</pre>
         </div>`);
     }
     this.panel.innerHTML = `
       <h3>Follow Stream</h3>
       <div class="kv"><span>Conversation</span><b>${escapeHtml(flow.hostA)} \u2194 ${escapeHtml(flow.hostB)}</b></div>
-      <div class="kv"><span>Payload shown</span><b>${formatBytes(shownBytes)} across ${Math.min(packets.length, MAX_PACKETS)} packets</b></div>
-      <p class="hint">This is a simplified, chronological view of application-layer bytes per packet (colored by direction) — unlike Wireshark's TCP reassembly, out-of-order or retransmitted segments are not reordered or deduplicated here.</p>
+      <div class="kv"><span>Stream index</span><b>${flow.streamIndex ?? '\u2014'}</b></div>
+      <div class="kv"><span>Payload shown</span><b>${formatBytes(shownBytes)} across ${Math.min(segments.length, MAX_SEGMENTS)} segments</b></div>
+      <p class="hint">${isTcp
+        ? 'Segments are ordered by TCP sequence number per direction and de-duplicated (retransmissions removed) &mdash; closer to Wireshark reassembly than raw arrival order, though segments split mid-application-message are not merged.'
+        : 'UDP has no sequence numbers, so segments are shown in arrival order.'}</p>
       <div class="stream-view">
         ${blocks.join('') || '<p class="hint">No decodable application-layer payload was found in this conversation.</p>'}
       </div>
@@ -240,6 +251,7 @@ export class Inspector {
     const hex = toHex(entry.data);
     const ascii = toAscii(entry.data);
     const flow = entry.flowKey ? this._flowByKey(entry.flowKey) : null;
+    const l7 = entry.frame.layers.l7;
     this.panel.innerHTML = `
       <h3>Packet #${entry.index + 1}</h3>
       <div class="kv"><span>Time</span><b>${formatTimestamp(entry.tsSeconds, entry.tsMicros)}</b></div>
@@ -251,9 +263,14 @@ export class Inspector {
         <button class="btn btn-ghost" id="view-convo-btn">\u2194 View full conversation</button>
         <button class="btn btn-ghost" id="follow-stream-btn2">\u21c6 Follow this stream</button>
       </div>` : ''}
+      ${renderExpertInfo(entry.expertInfo)}
       <h4>Layers</h4>
       ${renderFrameBlock(entry)}
       ${renderLayers(entry.frame.layers)}
+      ${entry.tcpAnalysis ? renderTcpAnalysis(entry.tcpAnalysis) : ''}
+      ${l7 && (l7.type === 'DNS' || l7.type === 'mDNS') ? renderDnsAnswers(l7) : ''}
+      ${l7 && l7.type === 'TLS' ? renderTlsDetail(l7) : ''}
+      ${l7 && l7.type === 'HTTP' ? renderHttpDetail(l7) : ''}
       <h4>Hex / ASCII</h4>
       <div class="hexview">${hex.slice(0, 4000)}${hex.length > 4000 ? '\u2026' : ''}</div>
       <div class="asciiview">${escapeHtml(ascii.slice(0, 400))}${ascii.length > 400 ? '\u2026' : ''}</div>
@@ -290,6 +307,85 @@ export class Inspector {
 }
 
 /** Synthesizes a Wireshark-style "Frame" section from packet metadata (not a real protocol layer). */
+/** Wireshark's "Expert Info" equivalent: cross-packet analysis notes
+ * (retransmissions, duplicate ACKs, zero windows, DNS errors, etc.)
+ * surfaced right in the packet detail rather than buried in a separate dialog. */
+function renderExpertInfo(expertInfo) {
+  if (!expertInfo || !expertInfo.length) return '';
+  const rows = expertInfo
+    .map((e) => `<div class="expert-row expert-${e.severity}"><span class="expert-sev">${e.severity}</span><span>${escapeHtml(e.group)}: ${escapeHtml(e.note)}</span></div>`)
+    .join('');
+  return `<h4>Expert Info</h4><div class="expert-list">${rows}</div>`;
+}
+
+function renderTcpAnalysis(tcp) {
+  const rows = [
+    ['TCP Stream Index', tcp.streamIndex],
+    ['Relative Sequence Number', tcp.relSeq],
+    ['Relative Ack Number', tcp.relAck],
+  ]
+    .filter(([, v]) => v != null)
+    .map(([label, val]) => `<div class="kv small"><span>${escapeHtml(label)}</span><b>${escapeHtml(String(val))}</b></div>`)
+    .join('');
+  return `<details class="layer-block" open><summary class="layer-title">[SEQ/ACK analysis]</summary>${rows}</details>`;
+}
+
+function renderDnsAnswers(l7) {
+  if (!l7.answers || !l7.answers.length) return '';
+  const rows = l7.answers
+    .map((a) => `<div class="kv small"><span>${escapeHtml(a.name || '(root)')} ${escapeHtml(a.type)}</span><b>${escapeHtml(String(a.rdata))} <span class="hint">(TTL ${a.ttl}s)</span></b></div>`)
+    .join('');
+  return `<details class="layer-block" open><summary class="layer-title">DNS Answers (${l7.answers.length})</summary>${rows}</details>`;
+}
+
+function renderTlsDetail(l7) {
+  let out = '';
+  if (l7.cipherSuites && l7.cipherSuites.length) {
+    const rows = l7.cipherSuites.slice(0, 20).map((c) => `<div class="kv small"><span>Offered</span><b>${escapeHtml(c.name)}</b></div>`).join('');
+    out += `<details class="layer-block"><summary class="layer-title">Cipher Suites (${l7.cipherSuites.length} offered by client)</summary>${rows}</details>`;
+  }
+  if (l7.cipherSuite) {
+    out += `<div class="kv small"><span>Negotiated Cipher Suite</span><b>${escapeHtml(l7.cipherSuite.name)}</b></div>`;
+  }
+  if (l7.alpn && l7.alpn.length) {
+    out += `<div class="kv small"><span>ALPN Protocols</span><b>${l7.alpn.map(escapeHtml).join(', ')}</b></div>`;
+  }
+  if (l7.extensions && l7.extensions.length) {
+    const rows = l7.extensions.map((e) => `<div class="kv small"><span>Extension</span><b>${escapeHtml(e.name)}</b></div>`).join('');
+    out += `<details class="layer-block"><summary class="layer-title">Extensions (${l7.extensions.length})</summary>${rows}</details>`;
+  }
+  if (l7.certificates && l7.certificates.length) {
+    const blocks = l7.certificates
+      .map((c, i) => {
+        if (c.error) return `<div class="cert-block"><div class="cert-title">Certificate #${i + 1}</div><p class="hint">${escapeHtml(c.error)}</p></div>`;
+        const flags = [
+          c.isExpired ? '<span class="cert-flag cert-flag-expired">Expired</span>' : '<span class="cert-flag cert-flag-valid">Valid dates</span>',
+          c.isSelfSigned ? '<span class="cert-flag cert-flag-selfsigned">Self-signed</span>' : '',
+        ].join(' ');
+        return `<div class="cert-block">
+          <div class="cert-title">Certificate #${i + 1} ${flags}</div>
+          <div class="kv small"><span>Subject CN</span><b>${escapeHtml(c.subjectCN || '\u2014')}</b></div>
+          <div class="kv small"><span>Issuer CN</span><b>${escapeHtml(c.issuerCN || '\u2014')}</b></div>
+          <div class="kv small"><span>Valid From</span><b>${escapeHtml(c.notBefore || '\u2014')}</b></div>
+          <div class="kv small"><span>Valid Until</span><b>${escapeHtml(c.notAfter || '\u2014')}</b></div>
+          <div class="kv small"><span>Serial Number</span><b>${escapeHtml(c.serialNumber || '\u2014')}</b></div>
+        </div>`;
+      })
+      .join('');
+    out += `<h4>Certificate Chain (${l7.certificates.length})</h4>${blocks}`;
+  }
+  return out;
+}
+
+function renderHttpDetail(l7) {
+  if (!l7.headers || !Object.keys(l7.headers).length) return '';
+  const rows = Object.entries(l7.headers)
+    .map(([k, v]) => `<div class="kv small"><span>${escapeHtml(k)}</span><b>${escapeHtml(v)}</b></div>`)
+    .join('');
+  return `<details class="layer-block" open><summary class="layer-title">HTTP Headers (${Object.keys(l7.headers).length})</summary>${rows}</details>`;
+}
+
+
 function renderFrameBlock(entry) {
   const rows = [
     ['Frame Number', entry.index + 1],

@@ -4,6 +4,7 @@
  * Deliberately dependency-free so it can run in the browser or a Web Worker.
  */
 import { macToString, ipv4ToString, ipv6ToString } from '../utils/bytes.js';
+import { decodeHandshakeRecord, TLS_VERSION_MAP } from './tls.js';
 
 const ETHERTYPE_VLAN = 0x8100;
 const ETHERTYPE_ARP = 0x0806;
@@ -226,17 +227,17 @@ function decodeApplication(data, ip, l4, layers, tags, payloadOffset) {
     return;
   }
   if (proto === 'DHCP') {
-    layers.l7 = { type: 'DHCP' };
+    layers.l7 = decodeDhcp(data, payloadOffset) || { type: 'DHCP' };
     tags.add('DHCP');
     return;
   }
   if (proto === 'NTP') {
-    layers.l7 = { type: 'NTP' };
+    layers.l7 = decodeNtp(data, payloadOffset);
     tags.add('NTP');
     return;
   }
   if (proto === 'SSDP') {
-    layers.l7 = { type: 'SSDP' };
+    layers.l7 = decodeTextProtocol(data, payloadOffset, 'SSDP');
     tags.add('SSDP');
     return;
   }
@@ -244,13 +245,12 @@ function decodeApplication(data, ip, l4, layers, tags, payloadOffset) {
   // version 0x03xx) rather than assuming port 443 — real-world TLS shows up on
   // many ports (DoT/853, DoH/443, SMTPS/465, mail/993, custom app ports, etc.),
   // and Wireshark itself dissects TLS this way rather than by port alone.
-  const tls = looksLikeTlsRecord(data, payloadOffset) ? decodeTlsClientHello(data, payloadOffset) : null;
-  if (tls) {
-    layers.l7 = tls;
+  if (looksLikeTlsRecord(data, payloadOffset)) {
+    layers.l7 = decodeTls(data, payloadOffset);
     tags.add('TLS');
     return;
   }
-  const httpGuess = decodeHttpGuess(data, payloadOffset);
+  const httpGuess = decodeHttp(data, payloadOffset);
   if (httpGuess) {
     layers.l7 = httpGuess;
     tags.add('HTTP');
@@ -261,34 +261,129 @@ function looksLikeTlsRecord(data, offset) {
   return offset + 3 <= data.length && data[offset] === 0x16 && data[offset + 1] === 0x03;
 }
 
+const TLS_CONTENT_TYPES = { 0x14: 'ChangeCipherSpec', 0x15: 'Alert', 0x16: 'Handshake', 0x17: 'ApplicationData' };
+
+/** Decodes a TLS record; delegates handshake message parsing (ClientHello/
+ * ServerHello/Certificate) to tls.js, which does the real field-level work. */
+function decodeTls(data, offset) {
+  const contentType = data[offset];
+  const recordVersion = (data[offset + 1] << 8) | data[offset + 2];
+  const base = {
+    type: 'TLS',
+    contentTypeName: TLS_CONTENT_TYPES[contentType] || `0x${contentType.toString(16)}`,
+    version: TLS_VERSION_MAP[recordVersion] || `0x${recordVersion.toString(16)}`,
+  };
+  if (contentType !== 0x16) {
+    // Non-handshake record (application data / alert / change-cipher-spec):
+    // nothing more to decode without the session keys.
+    return { ...base, handshakeType: null };
+  }
+  try {
+    const hs = decodeHandshakeRecord(data, offset);
+    return { ...base, ...hs };
+  } catch {
+    return { ...base, handshakeType: 'Handshake (undecodable)' };
+  }
+}
+
+const DNS_RECORD_TYPES = { 1: 'A', 2: 'NS', 5: 'CNAME', 6: 'SOA', 12: 'PTR', 15: 'MX', 16: 'TXT', 28: 'AAAA', 33: 'SRV', 64: 'SVCB', 65: 'HTTPS' };
+const DNS_RCODE_NAMES = { 0: 'NoError', 1: 'FormErr', 2: 'ServFail', 3: 'NXDomain', 4: 'NotImp', 5: 'Refused' };
+
 function decodeDns(data, offset) {
   if (offset + 12 > data.length) return null;
   const id = (data[offset] << 8) | data[offset + 1];
   const flags = (data[offset + 2] << 8) | data[offset + 3];
   const isResponse = (flags & 0x8000) !== 0;
+  const opcode = (flags >> 11) & 0x0f;
+  const authoritative = (flags & 0x0400) !== 0;
+  const truncated = (flags & 0x0200) !== 0;
+  const recursionDesired = (flags & 0x0100) !== 0;
+  const recursionAvailable = (flags & 0x0080) !== 0;
   const rcode = flags & 0x000f;
   const qdCount = (data[offset + 4] << 8) | data[offset + 5];
   const anCount = (data[offset + 6] << 8) | data[offset + 7];
+  const nsCount = (data[offset + 8] << 8) | data[offset + 9];
+  const arCount = (data[offset + 10] << 8) | data[offset + 11];
   let cursor = offset + 12;
   let name = '';
-  const RECORD_TYPES = { 1: 'A', 28: 'AAAA', 5: 'CNAME', 15: 'MX', 16: 'TXT', 2: 'NS', 64: 'SVCB', 65: 'HTTPS' };
-  if (qdCount > 0) {
-    const { labels, next } = readDnsName(data, cursor);
-    name = labels;
-    cursor = next;
-    if (cursor + 4 > data.length) return { type: 'DNS', isResponse, rcode, name, qdCount, anCount };
-    const qtype = (data[cursor] << 8) | data[cursor + 1];
-    return {
-      type: 'DNS',
-      isResponse,
-      rcode,
-      name,
-      queryType: RECORD_TYPES[qtype] || `TYPE${qtype}`,
-      qdCount,
-      anCount,
-    };
+  let queryType = null;
+  let queryClass = null;
+
+  const base = {
+    type: 'DNS', id, isResponse, opcode, authoritative, truncated, recursionDesired, recursionAvailable,
+    rcode, rcodeName: DNS_RCODE_NAMES[rcode] || `RCODE${rcode}`, qdCount, anCount, nsCount, arCount, answers: [],
+  };
+
+  try {
+    if (qdCount > 0) {
+      const { labels, next } = readDnsName(data, cursor);
+      name = labels;
+      cursor = next;
+      if (cursor + 4 <= data.length) {
+        const qtype = (data[cursor] << 8) | data[cursor + 1];
+        const qclass = (data[cursor + 2] << 8) | data[cursor + 3];
+        queryType = DNS_RECORD_TYPES[qtype] || `TYPE${qtype}`;
+        queryClass = qclass === 1 ? 'IN' : qclass;
+        cursor += 4;
+      }
+    }
+    // Skip remaining questions (rare to have >1, but stay correct).
+    for (let q = 1; q < qdCount && cursor < data.length; q++) {
+      const r = readDnsName(data, cursor);
+      cursor = r.next + 4;
+    }
+    // Parse up to a bounded number of answer records for readability + safety.
+    const answers = [];
+    for (let a = 0; a < anCount && a < 30 && cursor < data.length; a++) {
+      const rec = readDnsRecord(data, cursor);
+      if (!rec) break;
+      answers.push(rec.record);
+      cursor = rec.next;
+    }
+    return { ...base, name, queryType, queryClass, answers };
+  } catch {
+    return { ...base, name, queryType, queryClass };
   }
-  return { type: 'DNS', isResponse, rcode, qdCount, anCount };
+}
+
+/** Reads one DNS resource record (used for answers/authority/additional sections). */
+function readDnsRecord(data, offset) {
+  const { labels: name, next: afterName } = readDnsName(data, offset);
+  let cursor = afterName;
+  if (cursor + 10 > data.length) return null;
+  const type = (data[cursor] << 8) | data[cursor + 1];
+  const cls = (data[cursor + 2] << 8) | data[cursor + 3];
+  const ttl = readU32(data, cursor + 4);
+  const rdLength = (data[cursor + 8] << 8) | data[cursor + 9];
+  const rdataStart = cursor + 10;
+  const typeName = DNS_RECORD_TYPES[type] || `TYPE${type}`;
+  let rdata = null;
+  try {
+    if (typeName === 'A' && rdLength === 4) rdata = ipv4ToString(data, rdataStart);
+    else if (typeName === 'AAAA' && rdLength === 16) rdata = ipv6ToString(data, rdataStart);
+    else if (typeName === 'CNAME' || typeName === 'NS' || typeName === 'PTR') rdata = readDnsName(data, rdataStart).labels;
+    else if (typeName === 'TXT') rdata = readTxtRdata(data, rdataStart, rdLength);
+    else if (typeName === 'MX') rdata = `pref ${( data[rdataStart] << 8) | data[rdataStart + 1]} ${readDnsName(data, rdataStart + 2).labels}`;
+    else rdata = `${rdLength} bytes`;
+  } catch {
+    rdata = `${rdLength} bytes (undecoded)`;
+  }
+  return {
+    record: { name, type: typeName, class: cls === 1 ? 'IN' : cls, ttl, rdata },
+    next: rdataStart + rdLength,
+  };
+}
+
+function readTxtRdata(data, offset, rdLength) {
+  const end = offset + rdLength;
+  const parts = [];
+  let cursor = offset;
+  while (cursor < end && cursor < data.length) {
+    const len = data[cursor];
+    parts.push(String.fromCharCode(...data.slice(cursor + 1, cursor + 1 + len)));
+    cursor += 1 + len;
+  }
+  return parts.join(' ');
 }
 
 function readDnsName(data, offset) {
@@ -297,11 +392,19 @@ function readDnsName(data, offset) {
   let guard = 0;
   while (cursor < data.length && data[cursor] !== 0 && guard < 64) {
     const len = data[cursor];
-    if ((len & 0xc0) === 0xc0) { cursor += 2; guard++; break; } // compression pointer, stop
+    if ((len & 0xc0) === 0xc0) {
+      // Compression pointer: follow it to read the real labels, but the
+      // *cursor* for continuing the outer record only advances by 2 bytes.
+      const pointer = ((len & 0x3f) << 8) | data[cursor + 1];
+      if (pointer < data.length) {
+        const followed = readDnsName(data, pointer);
+        labels.push(followed.labels);
+      }
+      cursor += 2;
+      return { labels: labels.join('.'), next: cursor };
+    }
     cursor += 1;
-    labels.push(
-      String.fromCharCode(...data.slice(cursor, cursor + len))
-    );
+    labels.push(String.fromCharCode(...data.slice(cursor, cursor + len)));
     cursor += len;
     guard++;
   }
@@ -309,62 +412,87 @@ function readDnsName(data, offset) {
   return { labels: labels.join('.'), next: cursor };
 }
 
-function decodeTlsClientHello(data, offset) {
-  if (offset + 6 > data.length) return null;
-  const contentType = data[offset];
-  if (contentType !== 0x16) return null; // not a TLS handshake record
-  const recordVersion = (data[offset + 1] << 8) | data[offset + 2];
-  const handshakeType = data[offset + 5];
-  const versionMap = { 0x0301: 'TLS 1.0', 0x0302: 'TLS 1.1', 0x0303: 'TLS 1.2/1.3' };
-  let sni = null;
-  // Best-effort SNI extraction (ClientHello only); safe to fail silently.
-  try {
-    if (handshakeType === 0x01) {
-      let cursor = offset + 43; // skip fixed ClientHello fields + random
-      const sessionIdLen = data[cursor];
-      cursor += 1 + sessionIdLen;
-      const cipherSuitesLen = (data[cursor] << 8) | data[cursor + 1];
-      cursor += 2 + cipherSuitesLen;
-      const compressionLen = data[cursor];
-      cursor += 1 + compressionLen;
-      const extTotalLen = (data[cursor] << 8) | data[cursor + 1];
-      cursor += 2;
-      const extEnd = cursor + extTotalLen;
-      while (cursor + 4 <= extEnd && cursor + 4 <= data.length) {
-        const extType = (data[cursor] << 8) | data[cursor + 1];
-        const extLen = (data[cursor + 2] << 8) | data[cursor + 3];
-        if (extType === 0x0000) {
-          // Extension record layout from `cursor`: extType(2) extLen(2)
-          // server_name_list_length(2) name_type(1) name_length(2) name...
-          const nameLen = (data[cursor + 7] << 8) | data[cursor + 8];
-          sni = String.fromCharCode(
-            ...data.slice(cursor + 9, cursor + 9 + nameLen)
-          );
-          break;
-        }
-        cursor += 4 + extLen;
-      }
-    }
-  } catch {
-    sni = null;
+function decodeDhcp(data, offset) {
+  if (offset + 240 > data.length) return { type: 'DHCP' };
+  const op = data[offset];
+  const yourIp = ipv4ToString(data, offset + 16);
+  const clientIp = ipv4ToString(data, offset + 12);
+  let cursor = offset + 240; // fixed header + magic cookie
+  const OPTION_NAMES = { 53: 'DHCP Message Type', 50: 'Requested IP', 54: 'Server Identifier', 12: 'Hostname', 51: 'Lease Time' };
+  const MSG_TYPES = { 1: 'DISCOVER', 2: 'OFFER', 3: 'REQUEST', 4: 'DECLINE', 5: 'ACK', 6: 'NAK', 7: 'RELEASE', 8: 'INFORM' };
+  let messageType = null;
+  let hostname = null;
+  let guard = 0;
+  while (cursor < data.length && data[cursor] !== 0xff && guard < 40) {
+    const code = data[cursor];
+    if (code === 0) { cursor += 1; continue; }
+    const len = data[cursor + 1];
+    if (code === 53) messageType = MSG_TYPES[data[cursor + 2]] || data[cursor + 2];
+    if (code === 12) hostname = String.fromCharCode(...data.slice(cursor + 2, cursor + 2 + len));
+    cursor += 2 + len;
+    guard++;
+  }
+  return { type: 'DHCP', op: op === 1 ? 'BOOTREQUEST' : 'BOOTREPLY', messageType, hostname, yourIp, clientIp };
+}
+
+function decodeNtp(data, offset) {
+  if (offset >= data.length) return { type: 'NTP' };
+  const first = data[offset];
+  const mode = first & 0x07;
+  const version = (first >> 3) & 0x07;
+  const MODE_NAMES = { 3: 'client', 4: 'server', 1: 'symmetric active', 2: 'symmetric passive' };
+  return { type: 'NTP', version, mode: MODE_NAMES[mode] || mode };
+}
+
+function decodeTextProtocol(data, offset, label) {
+  const text = safeAsciiSlice(data, offset, Math.min(offset + 400, data.length));
+  const lines = text.split('\r\n').filter(Boolean);
+  return { type: label, firstLine: lines[0] || null, lineCount: lines.length };
+}
+
+/** Parses a full HTTP request/response (method+path+version, or status
+ * line, plus headers) from the remaining bytes of the packet payload. */
+function decodeHttp(data, offset) {
+  const text = safeAsciiSlice(data, offset, data.length);
+  const headerEnd = text.indexOf('\r\n\r\n');
+  const headerText = headerEnd >= 0 ? text.slice(0, headerEnd) : text.slice(0, 2000);
+  const lines = headerText.split('\r\n');
+  const firstLine = lines[0] || '';
+
+  const reqMatch = firstLine.match(/^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|CONNECT|TRACE) (\S+) HTTP\/(\d\.\d)/);
+  const respMatch = firstLine.match(/^HTTP\/(\d\.\d) (\d{3}) (.*)$/);
+  if (!reqMatch && !respMatch) return null;
+
+  const headers = {};
+  for (const line of lines.slice(1)) {
+    const idx = line.indexOf(':');
+    if (idx > 0) headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+  }
+
+  if (reqMatch) {
+    return {
+      type: 'HTTP', isRequest: true, method: reqMatch[1], path: reqMatch[2], httpVersion: reqMatch[3],
+      headers, host: headers.host || null, userAgent: headers['user-agent'] || null,
+      contentType: headers['content-type'] || null, contentLength: headers['content-length'] || null,
+    };
   }
   return {
-    type: 'TLS',
-    handshakeType: handshakeType === 0x01 ? 'ClientHello' : handshakeType === 0x02 ? 'ServerHello' : handshakeType,
-    version: versionMap[recordVersion] || `0x${recordVersion.toString(16)}`,
-    serverName: sni,
+    type: 'HTTP', isRequest: false, method: 'RESPONSE', httpVersion: respMatch[1],
+    statusCode: Number(respMatch[2]), statusText: respMatch[3], headers,
+    contentType: headers['content-type'] || null, contentLength: headers['content-length'] || null, server: headers.server || null,
   };
 }
 
-function decodeHttpGuess(data, offset) {
-  const slice = data.slice(offset, Math.min(offset + 16, data.length));
-  const text = String.fromCharCode(...slice);
-  const methodMatch = text.match(/^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH) /);
-  if (methodMatch) return { type: 'HTTP', method: methodMatch[1] };
-  if (text.startsWith('HTTP/1.')) return { type: 'HTTP', method: 'RESPONSE' };
-  return null;
+function safeAsciiSlice(data, start, end) {
+  end = Math.min(end, data.length);
+  if (start >= end) return '';
+  let out = '';
+  for (let i = start; i < end; i++) {
+    const c = data[i];
+    out += c >= 32 && c < 127 ? String.fromCharCode(c) : (c === 13 || c === 10 ? String.fromCharCode(c) : '.');
+  }
+  return out;
 }
-
 function readU32(data, offset) {
   return (
     (data[offset] << 24) |

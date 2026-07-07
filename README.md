@@ -30,23 +30,28 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
   surface (not a small panel); a search/filter bar, legend, dashboard, and
   inspector float on top as collapsible glass panels, and +/- buttons give
   Maps-style zoom control alongside scroll/drag orbiting.
-* **Wireshark-style display filters, evaluated per-packet** — type structured
-  queries like `tls && tcp.port==853`, `dns.qry.name==example.com`,
-  `tcp.flags.syn==1`, `http.request.method==GET`, or `ip.addr ~ /^10\./` for
-  regex matching, with a built-in syntax cheatsheet (the `?` button). Matching
-  is protocol-scoped (`tcp.port` never accidentally matches a UDP packet) and,
-  like Wireshark's display filter, a non-empty filter **hides** everything
-  that doesn't match — in the 3D scene, the packet list, and the dashboard —
-  rather than just dimming it. Plain text with no operators falls back to a
-  substring search. One-click protocol chips remain available too.
+* **Wireshark-style display filter engine** — a real recursive-descent parser
+  supporting `and`/`or`/`not`/`&&`/`||`/`!`, parentheses, comparisons
+  (`==`, `!=`, `>`, `<`), `contains`, `matches`/`~` regex, and `in {a, b, c}`
+  set membership, across 60+ protocol-scoped fields (`tcp.port`, `dns.qry.name`,
+  `tls.handshake.ciphersuite`, `tcp.analysis.retransmission`, `http.response.code`,
+  `tcp.stream`, and more — see the `?` syntax cheatsheet). Filtering is a true
+  **rebuild**, not a dim/hide overlay: the 3D scene, packet list, dashboard,
+  and every statistics tab are recomputed from exactly the matching subset, so
+  "investigate this traffic" genuinely narrows the whole app at once. Plain
+  text with no operators falls back to a substring search.
 * **Wireshark-style packet list** — a sortable No./Time/Source/Destination/
   Protocol/Length/Info table that always reflects the current filter and time
   range; click any row to open that exact packet in the Inspector and jump
   the 3D scene to its conversation.
-* **Click-to-follow traffic** — click any host or connection to highlight it
-  and everything it talks to; unrelated traffic dims out. Click empty space
-  or "Clear selection" to reset. A "Fit to filtered" button (or Enter in the
-  filter box) reframes the camera on only what currently matches.
+* **Ego-network navigation, not just highlighting** — click any host or
+  connection and the camera flies to it while the scene rebuilds to show only
+  its directly-related traffic (graph-database-style traversal, not a giant
+  static map with parts dimmed). A breadcrumb bar tracks your drill-down path
+  (click any crumb to jump back), an **"+ Expand context"** button reveals one
+  more hop of neighbors at a time, and **"Exit focus — show all"** returns to
+  the full (filtered) graph. Focus and the display filter compose together —
+  focusing while a filter is active stays within that filter's matches.
 * **Drill-down inspector with Wireshark-style layer breakdown** — click a
   host to see its conversations, click a conversation to see its packets,
   click a packet for a full Frame / Ethernet II / Internet Protocol /
@@ -54,11 +59,22 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
   Wireshark presents them) plus hex/ASCII view and a plain-English
   explanation — with a breadcrumb trail to jump back up. Every drill-down
   list narrows to match the active filter/time range automatically.
-* **Follow Stream** — from any TCP/UDP conversation, reconstruct and view its
-  application-layer payload bytes in chronological order, color-coded by
-  direction (client → server / server → client), similar to Wireshark's
-  Follow TCP Stream. This is a simplified, non-reassembling view (no
-  out-of-order reordering/deduplication) — see Roadmap.
+* **Follow Stream with sequence-based reassembly** — for TCP conversations,
+  segments are ordered by sequence number per direction and de-duplicated
+  (retransmissions removed) rather than shown in raw arrival order, then
+  color-coded by direction (client → server / server → client). UDP streams
+  fall back to arrival order (no sequence numbers exist to sort by).
+* **Deep, Wireshark-parity packet inspection** — every packet exposes Expert
+  Info (retransmissions, duplicate ACKs, zero windows, DNS errors — each with
+  a severity), TCP stream index + relative sequence/ack numbers, full DNS
+  answer records (name/type/TTL/rdata, CNAME chains), TLS cipher suites, ALPN,
+  extensions, and **parsed X.509 certificates** (subject/issuer CN, validity
+  dates, expiry/self-signed flags) from the handshake, and complete HTTP
+  request/response headers — not just a summary line.
+* **Conversations, Endpoints, and Name Resolution tables** — Wireshark's
+  Statistics-menu equivalents, as tabs alongside the Overview dashboard; Name
+  Resolution shows IP → hostname mappings the app learned from DNS answers,
+  TLS SNI, and HTTP Host headers seen anywhere in the capture.
 * **Clickable dashboard** — top talkers and protocol bars aren't just
   read-only stats; clicking one instantly filters the graph, packet list,
   and inspector to match, no typing required.

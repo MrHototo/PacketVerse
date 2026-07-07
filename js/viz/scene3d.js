@@ -25,7 +25,8 @@ export class Scene3D {
     this.onHover = onHover || (() => {});
     this.showLabels = true;
     this.particlesEnabled = true;
-    this.focusId = null; // currently focused host id, or null
+    this.primaryFocus = null; // cosmetic emphasis only — visibility is controlled entirely by setGraph()
+    this._flight = null; // active camera fly-to tween, if any
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x090d13);
@@ -121,8 +122,16 @@ export class Scene3D {
   zoomIn() { this.zoomBy(0.78); }
   zoomOut() { this.zoomBy(1.28); }
 
-  /** Rebuilds meshes to match the current (filtered) hosts/flows. */
+  /** Rebuilds meshes to match the currently *visible* hosts/flows (the result of
+   * filter ∩ ego-network-focus intersection computed in main.js). This is a real
+   * rebuild — objects that don't belong in the new set are disposed, not just
+   * hidden — so navigating is genuinely "traversing a reduced graph" rather than
+   * dimming parts of one giant unchanging scene. Node positions are preserved
+   * across rebuilds (via the previous layout) so the graph doesn't jump/reset
+   * every time a filter or focus changes; only genuinely new nodes get a fresh
+   * random start position, then the physics settles them in. */
   setGraph(hosts, flows) {
+    const previousLayout = this.layout;
     this._disposeGroup(this.nodeGroup);
     this._disposeGroup(this.edgeGroup);
     this._disposeGroup(this.labelGroup);
@@ -131,11 +140,16 @@ export class Scene3D {
     this.labels.clear();
     this.edgeLines.clear();
     this.adjacency.clear();
-    this.focusId = null;
     this.settleTicks = 0;
 
     const ids = [...hosts.keys()];
     this.layout = new ForceLayout3D(ids);
+    if (previousLayout) {
+      for (const id of ids) {
+        const prev = previousLayout.positions.get(id);
+        if (prev) this.layout.positions.set(id, { ...prev });
+      }
+    }
 
     const maxBytes = Math.max(1, ...[...hosts.values()].map((h) => h.bytes));
     for (const host of hosts.values()) {
@@ -206,90 +220,87 @@ export class Scene3D {
     }
   }
 
-  /** Sets which flows currently pass the filter/time-range. When `filterActive` is true,
-   * non-matching hosts and connections are fully hidden (not just dimmed) so the scene
-   * genuinely narrows down to the matching traffic, Wireshark-display-filter style. */
-  setActivity(activeFlowKeys, filterActive = false) {
-    this.activeFlowKeys = activeFlowKeys;
-    this.filterActive = filterActive;
-    this._applyVisualState();
-  }
+  /** Cosmetic-only emphasis: everything currently in the scene has already
+   * passed the filter/ego-network intersection (computed in main.js and
+   * applied via setGraph), so there's nothing left to hide here — this just
+   * makes the exact selected node/edge visually pop (brighter glow, thicker
+   * line) relative to its neighbors, which are still fully part of the
+   * "current investigation" and shouldn't be dimmed away. Pass null to clear. */
+  setPrimaryFocus(kind, id) {
+    this.primaryFocus = kind ? { kind, id } : null;
 
-  /** Highlights a host or flow and its directly connected traffic; dims everything else. Pass null to clear. */
-  focusOn(kind, id) {
-    this.focusId = kind ? { kind, id } : null;
-    this._applyVisualState();
-  }
-
-  clearFocus() {
-    this.focusOn(null, null);
-  }
-
-  _applyVisualState() {
-    const active = this.activeFlowKeys || null;
-    const filterActive = !!this.filterActive;
-    const focus = this.focusId;
-    let focusedFlowKeys = null;
-    let focusedHostIds = null;
-
-    if (focus?.kind === 'host') {
-      focusedFlowKeys = this.adjacency.get(focus.id) || new Set();
-      focusedHostIds = new Set([focus.id, ...[...focusedFlowKeys].flatMap((k) => {
-        const f = this.edgeLines.get(k)?.flow;
-        return f ? [f.hostA, f.hostB] : [];
-      })]);
-    } else if (focus?.kind === 'flow') {
-      const entry = this.edgeLines.get(focus.id);
-      focusedFlowKeys = new Set(entry ? [focus.id] : []);
-      focusedHostIds = new Set(entry ? [entry.flow.hostA, entry.flow.hostB] : []);
-    }
-
-    let activeHostIds = null;
-    if (filterActive) {
-      activeHostIds = new Set();
-      for (const key of active || []) {
-        const f = this.edgeLines.get(key)?.flow;
-        if (f) { activeHostIds.add(f.hostA); activeHostIds.add(f.hostB); }
-      }
+    let hostIds = null, flowKeys = null;
+    if (this.primaryFocus?.kind === 'host') {
+      flowKeys = this.adjacency.get(id) || new Set();
+      hostIds = new Set([id]);
+    } else if (this.primaryFocus?.kind === 'flow') {
+      const entry = this.edgeLines.get(id);
+      flowKeys = new Set(entry ? [id] : []);
+      hostIds = new Set(entry ? [entry.flow.hostA, entry.flow.hostB] : []);
     }
 
     for (const [key, entry] of this.edgeLines) {
-      const passesFilter = !filterActive || (active && active.has(key));
-      const inFocus = !focus || (focusedFlowKeys && focusedFlowKeys.has(key));
-      entry.line.visible = passesFilter;
-      entry.particle.visible = passesFilter && inFocus && this.particlesEnabled;
-      entry.material.opacity = !passesFilter ? 0 : inFocus ? ACTIVE_OPACITY : DIM_OPACITY;
+      const isPrimary = !!flowKeys && flowKeys.has(key);
+      entry.material.opacity = !this.primaryFocus ? ACTIVE_OPACITY : isPrimary ? ACTIVE_OPACITY : DIM_OPACITY;
+      entry.particle.visible = this.particlesEnabled && (!this.primaryFocus || isPrimary);
     }
-
-    for (const [id, mesh] of this.nodeMeshes) {
-      const passesFilter = !filterActive || (activeHostIds && activeHostIds.has(id));
-      const inFocus = !focus || (focusedHostIds && focusedHostIds.has(id));
-      mesh.visible = passesFilter;
-      mesh.material.emissiveIntensity = inFocus ? 0.85 : 0.15;
-      mesh.material.opacity = inFocus ? 1 : 0.35;
-      mesh.material.transparent = !inFocus;
-      const halo = this.nodeHalos.get(id);
-      if (halo) { halo.visible = passesFilter; halo.material.opacity = !passesFilter ? 0 : inFocus ? 0.55 : 0.05; }
-      const label = this.labels.get(id);
-      if (label) label.visible = passesFilter && this.showLabels;
+    for (const [nid, mesh] of this.nodeMeshes) {
+      const isPrimary = !!hostIds && hostIds.has(nid);
+      mesh.material.emissiveIntensity = !this.primaryFocus ? 0.85 : isPrimary ? 1.1 : 0.5;
+      const halo = this.nodeHalos.get(nid);
+      if (halo) halo.material.opacity = !this.primaryFocus ? 0.4 : isPrimary ? 0.75 : 0.15;
     }
   }
 
-  /** Reframes the camera to fit only the currently visible (post-filter) nodes. */
-  fitToVisible() {
+  clearPrimaryFocus() {
+    this.setPrimaryFocus(null, null);
+  }
+
+  /** Smoothly flies the camera to look at a specific node (or the graph centroid
+   * if id is null), eased over `duration` seconds — this is what makes clicking
+   * into a node feel like "traveling" to it rather than an abrupt cut. */
+  flyToNode(id, duration = 0.9) {
+    if (!this.layout) return;
+    const p = id ? this.layout.get(id) : { x: 0, y: 0, z: 0 };
+    const dir = new THREE.Vector3(0.35, 0.5, 1).normalize();
+    const dist = 70;
+    this._startFlight(
+      new THREE.Vector3(p.x + dir.x * dist, p.y + dir.y * dist, p.z + dir.z * dist),
+      new THREE.Vector3(p.x, p.y, p.z),
+      duration
+    );
+  }
+
+  _startFlight(camTarget, orbitTarget, duration) {
+    this._flight = {
+      t: 0,
+      duration,
+      fromCam: this.camera.position.clone(),
+      toCam: camTarget,
+      fromTarget: this.controls.target.clone(),
+      toTarget: orbitTarget,
+    };
+  }
+
+  /** Reframes the camera to fit every node currently in the scene (i.e. the
+   * active filter/focus subgraph, since that's all that's ever rendered now). */
+  fitToVisible(animated = true) {
     if (!this.layout) return;
     let maxDist = 60;
     let any = false;
-    for (const [id, mesh] of this.nodeMeshes) {
-      if (!mesh.visible) continue;
+    let cx = 0, cy = 0, cz = 0, n = 0;
+    for (const id of this.nodeMeshes.keys()) {
       any = true;
       const p = this.layout.get(id);
       maxDist = Math.max(maxDist, Math.hypot(p.x, p.y, p.z));
+      cx += p.x; cy += p.y; cz += p.z; n++;
     }
     if (!any) return this.resetCamera();
     const dist = Math.max(120, maxDist * 2.6);
-    this.camera.position.set(dist * 0.25, dist * 0.35, dist);
-    this.controls.target.set(0, 0, 0);
+    const target = new THREE.Vector3(cx / n, cy / n, cz / n);
+    const camPos = new THREE.Vector3(target.x + dist * 0.25, target.y + dist * 0.35, target.z + dist);
+    if (animated) this._startFlight(camPos, target, 0.8);
+    else { this.camera.position.copy(camPos); this.controls.target.copy(target); }
   }
 
   _onPointerMove(event) {
@@ -353,11 +364,20 @@ export class Scene3D {
       }
     }
 
+    if (this._flight) {
+      const f = this._flight;
+      f.t = Math.min(1, f.t + dt / f.duration);
+      const e = easeInOutCubic(f.t);
+      this.camera.position.lerpVectors(f.fromCam, f.toCam, e);
+      this.controls.target.lerpVectors(f.fromTarget, f.toTarget, e);
+      if (f.t >= 1) this._flight = null;
+    }
+
     this.controls.update();
     this.composer.render();
   }
 
-  resetCamera() {
+  resetCamera(animated = false) {
     // Frame the camera to fit the current graph's bounding radius.
     let maxDist = 120;
     if (this.layout) {
@@ -367,8 +387,10 @@ export class Scene3D {
       }
     }
     const dist = Math.max(160, maxDist * 2.4);
-    this.camera.position.set(dist * 0.25, dist * 0.35, dist);
-    this.controls.target.set(0, 0, 0);
+    const camPos = new THREE.Vector3(dist * 0.25, dist * 0.35, dist);
+    const target = new THREE.Vector3(0, 0, 0);
+    if (animated) this._startFlight(camPos, target, 0.8);
+    else { this.camera.position.copy(camPos); this.controls.target.copy(target); }
   }
 
   _disposeGroup(group) {
@@ -432,4 +454,8 @@ function makeTextSprite(text) {
   const scale = 0.11;
   sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
   return sprite;
+}
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }

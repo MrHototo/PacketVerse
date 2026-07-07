@@ -6,6 +6,8 @@
  * stays responsive even on large captures.
  */
 
+import { analyzeStreams } from './streamAnalysis.js';
+
 export function buildGraphModel(rawPackets, decodedFrames) {
   const hosts = new Map(); // key: ip or mac -> host record
   const flows = new Map(); // key: canonical 5-tuple -> flow record
@@ -42,10 +44,24 @@ export function buildGraphModel(rawPackets, decodedFrames) {
     });
   }
 
+  // Cross-packet analysis (TCP stream indices/relative seq, retransmission +
+  // duplicate-ACK + zero-window detection, expert info, name resolution table)
+  // that a single-frame decoder can't compute on its own.
+  const { perPacket, nameTable, streamIndexOf } = analyzeStreams(packets);
+  for (const p of packets) {
+    const extra = perPacket.get(p.index);
+    p.tcpAnalysis = extra?.tcp || null;
+    p.expertInfo = extra?.expertInfo || [];
+  }
+  for (const flow of flows.values()) {
+    if (streamIndexOf.has(flow.key)) flow.streamIndex = streamIndexOf.get(flow.key);
+  }
+
   return {
     hosts,
     flows,
     packets,
+    nameTable,
     timeRange: { start: firstTs === Infinity ? 0 : firstTs, end: lastTs === -Infinity ? 0 : lastTs },
   };
 }

@@ -15,7 +15,7 @@
  * case-insensitive substring search so basic typing never "breaks".
  */
 
-const TOKEN_RE = /\s*(==|!=|>=|<=|&&|\|\||~|>|<|!|\(|\)|"[^"]*"|\/[^/]*\/|[^\s()=!<>~&|]+)/g;
+const TOKEN_RE = /\s*(==|!=|>=|<=|&&|\|\||~|>|<|!|\(|\)|\{|\}|,|"[^"]*"|\/[^/]*\/|[^\s()=!<>~&|{},]+)/g;
 
 function tokenize(input) {
   const tokens = [];
@@ -80,6 +80,32 @@ class Parser {
       const valueTok = this.next();
       return { type: 'cmp', field: tok, op, value: stripQuotes(valueTok) };
     }
+    if (this.isWord(this.peek(), 'contains')) {
+      this.next();
+      const valueTok = this.next();
+      return { type: 'cmp', field: tok, op: 'contains', value: stripQuotes(valueTok) };
+    }
+    if (this.isWord(this.peek(), 'matches')) {
+      this.next();
+      const valueTok = this.next();
+      return { type: 'cmp', field: tok, op: '~', value: stripQuotes(valueTok) };
+    }
+    if (this.isWord(this.peek(), 'in')) {
+      this.next();
+      const set = [];
+      if (this.peek() === '{') {
+        this.next();
+        while (this.peek() && this.peek() !== '}') {
+          if (this.peek() === ',') { this.next(); continue; }
+          set.push(stripQuotes(this.next()));
+        }
+        if (this.peek() === '}') this.next();
+      }
+      return { type: 'in', field: tok, values: set };
+    }
+    // A bare, known field name with no operator (e.g. `tcp.flags.syn`, `dns.flags.response`,
+    // just `tcp`) tests for that field's presence/truthiness rather than a text search —
+    // this mirrors Wireshark's behavior where a bare field name is itself a filter.
     return { type: 'bare', value: stripQuotes(tok) };
   }
 }
@@ -141,6 +167,53 @@ const FIELD_ALIASES = {
   'arp.opcode': 'arpOp', 'arp.src.proto_ipv4': 'arpSenderIp', 'arp.dst.proto_ipv4': 'arpTargetIp',
 
   'icmp.type': 'icmpType', 'icmp.code': 'icmpCode',
+
+  'tcp.stream': 'tcpStream', 'udp.stream': 'tcpStream', 'stream': 'tcpStream',
+  'tcp.analysis.retransmission': 'isRetransmission', 'tcp.analysis.duplicate_ack': 'isDupAck',
+  'tcp.analysis.zero_window': 'isZeroWindow', 'tcp.analysis.flags': 'hasExpertInfo',
+  'expert.severity': 'expertSeverity', 'expert.message': 'expertMessage', '_ws.expert': 'hasExpertInfo',
+
+  'ip.ttl': 'ipTtl', 'ip.len': 'ipLen', 'ip.id': 'ipId', 'ip.version': 'ipVersion',
+
+  'dns.a': 'dnsFirstA', 'dns.aaaa': 'dnsFirstAaaa', 'dns.resp.ttl': 'dnsTtl',
+  'dns.flags.authoritative': 'dnsAuthoritative', 'dns.flags.truncated': 'dnsTruncated',
+  'dns.count.answers': 'dnsAnCount',
+
+  'tls.handshake.ciphersuite': 'tlsCipherSuite', 'tls.handshake.ciphersuites': 'tlsCipherSuiteList',
+  'tls.handshake.extensions_alpn_str': 'tlsAlpn', 'tls.alpn': 'tlsAlpn',
+  'tls.handshake.certificate': 'tlsHasCert', 'tls.cert.subject': 'tlsCertSubject', 'tls.cert.issuer': 'tlsCertIssuer',
+
+  'http.host': 'httpHost', 'http.request.uri': 'httpPath', 'http.request.full_uri': 'httpPath',
+  'http.response.code': 'httpStatus', 'http.user_agent': 'httpUserAgent', 'http.server': 'httpServer',
+  'http.content_type': 'httpContentType', 'http.response': 'isHttpResponse', 'http.request': 'isHttpRequest',
+};
+
+/** Bare, operator-less field words that test presence/type rather than doing a text search
+ * (e.g. typing just `tcp` or `broadcast`) — mirrors how Wireshark's display filter treats
+ * a bare protocol/field name as its own boolean test. */
+const PRESENCE_TESTS = {
+  tcp: (ctx) => ctx.protocol === 'TCP',
+  udp: (ctx) => ctx.protocol === 'UDP',
+  icmp: (ctx) => ctx.protocol === 'ICMP',
+  icmpv6: (ctx) => ctx.protocol === 'ICMPv6',
+  arp: (ctx) => ctx.tags.includes('ARP'),
+  dns: (ctx) => ctx.app === 'DNS' || ctx.tags.includes('DNS'),
+  mdns: (ctx) => ctx.tags.includes('mDNS'),
+  dhcp: (ctx) => ctx.tags.includes('DHCP'),
+  ntp: (ctx) => ctx.tags.includes('NTP'),
+  ssdp: (ctx) => ctx.tags.includes('SSDP'),
+  tls: (ctx) => ctx.app === 'TLS',
+  ssl: (ctx) => ctx.app === 'TLS',
+  http: (ctx) => ctx.app === 'HTTP',
+  quic: (ctx) => ctx.tags.includes('QUIC'),
+  ipv4: (ctx) => ctx.tags.includes('IPv4'),
+  ipv6: (ctx) => ctx.tags.includes('IPv6'),
+  vlan: (ctx) => ctx.vlanId != null,
+  broadcast: (ctx) => ctx.tags.includes('Broadcast'),
+  multicast: (ctx) => ctx.tags.includes('Multicast'),
+  unicast: (ctx) => ctx.tags.includes('Unicast'),
+  errors: (ctx) => ctx.tags.includes('Errors') || ctx.flagRst || ctx.hasExpertInfo,
+  retransmissions: (ctx) => ctx.isRetransmission,
 };
 
 /** Builds the field context for a single decoded packet entry (from graphModel.packets). */
@@ -210,6 +283,41 @@ export function buildPacketContext(entry) {
 
     icmpType: (l4?.type === 'ICMP' || l4?.type === 'ICMPv6') ? l4.icmpType : null,
     icmpCode: (l4?.type === 'ICMP' || l4?.type === 'ICMPv6') ? l4.icmpCode : null,
+
+    tcpStream: entry.tcpAnalysis?.streamIndex ?? null,
+    isRetransmission: (entry.expertInfo || []).some((e) => e.note?.includes('Retransmission')),
+    isDupAck: (entry.expertInfo || []).some((e) => e.note?.includes('Duplicate ACK')),
+    isZeroWindow: (entry.expertInfo || []).some((e) => e.note?.includes('Zero window')),
+    hasExpertInfo: (entry.expertInfo || []).length > 0,
+    expertSeverity: (entry.expertInfo || []).map((e) => e.severity),
+    expertMessage: (entry.expertInfo || []).map((e) => e.note),
+
+    ipTtl: l3?.ttl ?? null,
+    ipLen: l3?.totalLength ?? l3?.payloadLength ?? null,
+    ipId: null,
+    ipVersion: l3?.type === 'IPv6' ? 6 : l3?.type === 'IPv4' ? 4 : null,
+
+    dnsFirstA: (l7?.answers || []).find((a) => a.type === 'A')?.rdata ?? null,
+    dnsFirstAaaa: (l7?.answers || []).find((a) => a.type === 'AAAA')?.rdata ?? null,
+    dnsTtl: (l7?.answers || []).map((a) => a.ttl),
+    dnsAuthoritative: l7?.authoritative === true,
+    dnsTruncated: l7?.truncated === true,
+
+    tlsCipherSuite: l7?.type === 'TLS' ? (l7.cipherSuite?.name ?? null) : null,
+    tlsCipherSuiteList: l7?.type === 'TLS' ? (l7.cipherSuites || []).map((c) => c.name) : [],
+    tlsAlpn: l7?.type === 'TLS' ? (l7.alpn || []) : [],
+    tlsHasCert: l7?.type === 'TLS' && l7.handshakeType === 'Certificate',
+    tlsCertSubject: l7?.type === 'TLS' ? (l7.certificates || []).map((c) => c.subjectCN).filter(Boolean) : [],
+    tlsCertIssuer: l7?.type === 'TLS' ? (l7.certificates || []).map((c) => c.issuerCN).filter(Boolean) : [],
+
+    httpHost: l7?.type === 'HTTP' ? (l7.host || l7.headers?.host || null) : null,
+    httpPath: l7?.type === 'HTTP' ? (l7.path ?? null) : null,
+    httpStatus: l7?.type === 'HTTP' ? (l7.statusCode ?? null) : null,
+    httpUserAgent: l7?.type === 'HTTP' ? (l7.userAgent ?? null) : null,
+    httpServer: l7?.type === 'HTTP' ? (l7.server ?? null) : null,
+    httpContentType: l7?.type === 'HTTP' ? (l7.contentType ?? null) : null,
+    isHttpRequest: l7?.type === 'HTTP' && l7.isRequest === true,
+    isHttpResponse: l7?.type === 'HTTP' && l7.isRequest === false,
   };
 
   ctx._haystack = [
@@ -230,8 +338,23 @@ function evalNode(node, ctx) {
     case 'or': return evalNode(node.left, ctx) || evalNode(node.right, ctx);
     case 'not': return !evalNode(node.expr, ctx);
     case 'bare': {
-      const needle = String(node.value).toLowerCase();
-      return ctx._haystack.includes(needle);
+      const word = String(node.value).toLowerCase();
+      if (PRESENCE_TESTS[word]) return PRESENCE_TESTS[word](ctx);
+      const key = FIELD_ALIASES[word];
+      if (key !== undefined) {
+        const v = ctx[key];
+        if (typeof v === 'boolean') return v;
+        if (Array.isArray(v)) return v.length > 0;
+        return v != null && v !== '';
+      }
+      return ctx._haystack.includes(word);
+    }
+    case 'in': {
+      const key = FIELD_ALIASES[node.field.toLowerCase()] || node.field.toLowerCase();
+      const fieldVal = ctx[key];
+      const values = (Array.isArray(fieldVal) ? fieldVal : [fieldVal]).filter((v) => v != null).map((v) => String(v).toLowerCase());
+      const wanted = new Set(node.values.map((v) => String(typeof v === 'object' ? v.regex : v).toLowerCase()));
+      return values.some((v) => wanted.has(v));
     }
     case 'cmp': {
       const key = FIELD_ALIASES[node.field.toLowerCase()] || node.field.toLowerCase();
@@ -244,6 +367,11 @@ function evalNode(node, ctx) {
 }
 
 function compare(fieldVal, op, rawValue) {
+  if (op === 'contains') {
+    const needle = String(rawValue).toLowerCase();
+    const values = Array.isArray(fieldVal) ? fieldVal : [fieldVal];
+    return values.some((v) => v != null && String(v).toLowerCase().includes(needle));
+  }
   if (typeof fieldVal === 'boolean') {
     const truthy = ['1', 'true', 'yes'].includes(String(rawValue).toLowerCase());
     const falsy = ['0', 'false', 'no'].includes(String(rawValue).toLowerCase());
