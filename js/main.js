@@ -101,7 +101,7 @@ const els = {
 let model = null;
 let scene3d = null;
 let scene2d = null;
-let renderersInitialized = false; // guards one-time construction, independent of whether scene3d ended up null (WebGL failure fallback)
+// (removed unused renderersInitialized flag -- each component now guards its own construction, see finishLoadInner)
 let viz = null; // whichever of scene3d/scene2d is currently active — all camera-only ops go through this
 let vizMode = (localStorage.getItem('packetverse.vizMode') === '2d') ? '2d' : '3d';
 let timeline = null;
@@ -407,8 +407,19 @@ function finishLoadInner(rawPackets, decoded, label) {
   showProgress(null);
   els.app.classList.add('loaded');
 
-  if (!renderersInitialized) {
-    renderersInitialized = true;
+  // Each renderer/component is now guarded independently by "do I already
+  // exist" rather than one shared `renderersInitialized` flag. Previously, if
+  // *anything* later in this block threw (e.g. the rebuildGraph() crash fixed
+  // above), the shared flag had already been set permanently, which caused a
+  // real, observed second bug: whichever component never finished
+  // constructing on the failed first attempt stayed `null` forever, and the
+  // very next load would skip its construction entirely (since the shared
+  // flag was already true) and crash trying to call a method on `null` --
+  // exactly the "Cannot read properties of null (reading 'clear')" report.
+  // Guarding each piece by its own existence means a partial failure can
+  // always be retried cleanly on the next load instead of wedging state.
+  const firstConstruction = !scene2d && !timeline && !filterBar;
+  if (!scene3d && !scene2d) {
     console.log('[PacketVerse] first-load: constructing renderers. container size:',
       els.sceneContainer3d?.clientWidth, 'x', els.sceneContainer3d?.clientHeight);
     try {
@@ -427,6 +438,8 @@ function finishLoadInner(rawPackets, decoded, label) {
       vizMode = '2d';
       showRenderError(err, '3d-init');
     }
+  }
+  if (!scene2d) {
     scene2d = new Scene2D(els.sceneContainer2d, {
       onSelect: selectObject,
       onDoubleSelect: isolateObject,
@@ -435,26 +448,26 @@ function finishLoadInner(rawPackets, decoded, label) {
     });
     console.log('[PacketVerse] first-load: renderers constructed. scene3d:', !!scene3d, 'scene2d:', !!scene2d, 'mode:', vizMode);
     applyVizModeUI(false);
+  }
 
-    // Timeline/FilterBar are constructed exactly once, same as the scenes above.
-    // They used to be rebuilt on *every* load, which silently re-attached a
-    // fresh set of mousedown/mousemove/mouseup/resize/input listeners on top
-    // of the still-live previous set each time -- harmless-looking on a single
-    // upload, but a real bug once you factor in that "re-upload from inside the
-    // dashboard" was the reported workaround: it was leaving behind an
-    // ever-growing pile of duplicate listeners rather than being a clean reset.
+  // Timeline/FilterBar: constructed once each and reused thereafter, same
+  // reasoning as above -- re-creating them on every load used to silently
+  // stack duplicate mousedown/mousemove/mouseup/resize/input listeners.
+  if (!timeline) {
     timeline = new Timeline(els.timelineCanvas);
     els.timelineCanvas.addEventListener('timeline:range', (e) => {
       currentRange = e.detail;
       refreshViews();
     });
+  }
+  if (!filterBar) {
     filterBar = new FilterBar({
       searchInput: els.search,
       presetContainers: [els.presetsPanel], // top floating row removed: redundant with the left drawer's "Quick protocol filters" panel
       onChange: refreshViews,
     });
-  } else {
-    filterBar.clear(); // start every newly-loaded capture with a clean, unfiltered view
+  } else if (!firstConstruction) {
+    filterBar.clear(); // start every newly-loaded (non-first) capture with a clean, unfiltered view
   }
   inspector.setModel(model);
   timeline.setData(model.packets, model.timeRange);
@@ -554,6 +567,15 @@ function clearPrimaryFocusAll() {
 /** Recomputes the (possibly clustered) display graph from the full model.
  * This is the "base" graph before filter/focus narrowing is applied. */
 function rebuildGraph() {
+  try {
+    rebuildGraphInner();
+  } catch (err) {
+    console.error('[PacketVerse] rebuildGraph failed:', err);
+    showRenderError(err, 'graph');
+  }
+}
+
+function rebuildGraphInner() {
   if (!model) return;
   displayGraph = computeDisplayGraph(model.hosts, model.flows, expandedClusters);
 
@@ -562,7 +584,7 @@ function rebuildGraph() {
     const k = f.appProtocol || f.protocol;
     protocolCounts[k] = (protocolCounts[k] || 0) + 1;
   }
-  filterBar.renderPresets(protocolCounts);
+  filterBar?.renderPresets(protocolCounts);
   renderFindings();
   refreshViews();
 }

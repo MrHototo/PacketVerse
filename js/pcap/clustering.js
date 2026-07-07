@@ -110,7 +110,15 @@ export function computeDisplayGraph(hosts, flows, expanded = new Set(), threshol
     merged.packets += flow.packets;
     flow.tags.forEach((t) => merged.tags.add(t));
     flow.flagsSeen.forEach((t) => merged.flagsSeen.add(t));
-    if (flow.packetIndices) merged.packetIndices.push(...flow.packetIndices);
+    if (flow.packetIndices) {
+      // NOTE: intentionally NOT `merged.packetIndices.push(...flow.packetIndices)`.
+      // Spreading a large array as call arguments blows the JS call stack once a
+      // busy conversation/subnet accumulates enough packets (this was the exact
+      // cause of the reported "Maximum call stack size exceeded" crash on real,
+      // moderately-large captures -- the small demo capture never had enough
+      // packets in one merged flow to hit the engine's argument-count limit).
+      for (let i = 0; i < flow.packetIndices.length; i++) merged.packetIndices.push(flow.packetIndices[i]);
+    }
     merged.firstSeen = Math.min(merged.firstSeen, flow.firstSeen);
     merged.lastSeen = Math.max(merged.lastSeen, flow.lastSeen);
     if (a !== flow.hostA || b !== flow.hostB) merged.aggregated = true;
