@@ -101,6 +101,7 @@ const els = {
 let model = null;
 let scene3d = null;
 let scene2d = null;
+let renderersInitialized = false; // guards one-time construction, independent of whether scene3d ended up null (WebGL failure fallback)
 let viz = null; // whichever of scene3d/scene2d is currently active — all camera-only ops go through this
 let vizMode = (localStorage.getItem('packetverse.vizMode') === '2d') ? '2d' : '3d';
 let timeline = null;
@@ -370,6 +371,21 @@ async function loadFile(file) {
 
 /** Shared setup path for both real uploads and the synthetic demo capture. */
 function finishLoad(rawPackets, decoded, label) {
+  try {
+    finishLoadInner(rawPackets, decoded, label);
+  } catch (err) {
+    console.error('[PacketVerse] finishLoad failed:', err);
+    showRenderError(err, 'load');
+  }
+}
+
+/** Actual first-load setup body, split out so finishLoad() can wrap it in a
+ * single try/catch — previously an exception anywhere in here (e.g. during
+ * one-time Scene3D/FilterBar/Timeline construction) would silently abort
+ * mid-function: the file-meta text (set moments earlier) stayed populated,
+ * but rebuildGraph()/viz.resetCamera() at the bottom never ran, leaving a
+ * populated header with a fully blank, un-diagnosable canvas. */
+function finishLoadInner(rawPackets, decoded, label) {
   model = buildGraphModel(rawPackets, decoded);
   currentRange = { ...model.timeRange };
   expandedClusters.clear();
@@ -379,7 +395,8 @@ function finishLoad(rawPackets, decoded, label) {
   showProgress(null);
   els.app.classList.add('loaded');
 
-  if (!scene3d) {
+  if (!renderersInitialized) {
+    renderersInitialized = true;
     try {
       scene3d = new Scene3D(els.sceneContainer3d, {
         onSelect: selectObject,
@@ -420,7 +437,7 @@ function finishLoad(rawPackets, decoded, label) {
   });
 
   rebuildGraph();
-  viz.resetCamera(false);
+  viz?.resetCamera(false);
   requestAnimationFrame(layoutTopStack);
 }
 
@@ -450,7 +467,7 @@ function applyVizModeUI(animateFit) {
   // now, so resize before framing or the fit-to-view math would use stale
   // dimensions.
   viz.resize();
-  viz.fitToVisible(animateFit);
+  viz?.fitToVisible(animateFit);
 }
 
 /** Pushes the current visible graph to BOTH renderers (not just the active
@@ -526,6 +543,15 @@ function rebuildGraph() {
  * agree on "what's currently in view."
  */
 function refreshViews() {
+  try {
+    refreshViewsInner();
+  } catch (err) {
+    console.error('[PacketVerse] refreshViews failed:', err);
+    showRenderError(err, 'refresh');
+  }
+}
+
+function refreshViewsInner() {
   if (!model || !displayGraph) return;
 
   const inRangePackets = model.packets.filter(
@@ -661,7 +687,7 @@ function pushFocus(entry) {
   } else {
     setPrimaryFocusAll(entry.kind, entry.id);
   }
-  viz.fitToVisible();
+  viz?.fitToVisible();
   const host = displayGraph?.hosts.get(entry.kind === 'host' ? entry.id : '');
   if (entry.kind === 'host' && host) { inspector.showHost(host); revealInspector(); }
   else if (entry.kind === 'flow') {
@@ -675,13 +701,13 @@ function expandFocus() {
   if (!top) return;
   top.hops += 1;
   refreshViews();
-  viz.fitToVisible();
+  viz?.fitToVisible();
 }
 
 function popFocusTo(index) {
   focusStack = focusStack.slice(0, index + 1);
   refreshViews();
-  viz.fitToVisible();
+  viz?.fitToVisible();
 }
 
 function exitFocus() {
@@ -692,7 +718,7 @@ function exitFocus() {
   }
   focusStack = [];
   refreshViews();
-  viz.fitToVisible();
+  viz?.fitToVisible();
 }
 
 /** Follow Stream: pushes a dedicated 'stream' focus entry that isolates the
@@ -708,7 +734,7 @@ function followStream(flow) {
   focusStack.push({ kind: 'stream', id: displayKey, hostA: displayFlow.hostA, hostB: displayFlow.hostB, hops: 0 });
   refreshViews();
   setPrimaryFocusAll('flow', displayKey);
-  viz.fitToVisible();
+  viz?.fitToVisible();
 }
 
 /** Exits Follow Stream mode, popping only the stream layer off the focus
@@ -723,7 +749,7 @@ function exitStreamFocus() {
     focusStack = [];
   }
   refreshViews();
-  viz.fitToVisible();
+  viz?.fitToVisible();
   const remaining = focusStack[focusStack.length - 1];
   if (remaining) setPrimaryFocusAll(remaining.kind === 'stream' ? 'flow' : remaining.kind, remaining.kind === 'stream' ? remaining.id : remaining.id);
   else clearPrimaryFocusAll();
@@ -748,12 +774,12 @@ function selectObject(userData) {
   }
   if (userData.kind === 'host') {
     setPrimaryFocusAll('host', userData.id);
-    viz.centerOn(userData.id);
+    viz?.centerOn(userData.id);
     inspector.showHost(userData.host);
     revealInspector();
   } else if (userData.kind === 'flow') {
     setPrimaryFocusAll('flow', userData.key);
-    viz.centerOn(userData.flow.hostA);
+    viz?.centerOn(userData.flow.hostA);
     inspector.showFlow(userData.flow);
     revealInspector();
   }
