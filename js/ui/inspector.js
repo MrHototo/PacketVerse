@@ -9,7 +9,7 @@
  * elsewhere in the app.
  */
 import { toHex, toAscii, formatBytes, formatTimestamp } from '../utils/bytes.js';
-import { explainFlow, explainPacket } from './explainer.js';
+import { renderPacketContext, renderFlowContext, renderHostContext } from './packetContext.js';
 import { reassembleStream } from '../pcap/streamAnalysis.js';
 
 const SKIP_FIELDS = new Set(['type', 'headerEnd', 'protoNum']);
@@ -46,6 +46,7 @@ export class Inspector {
     this.panel = panelEl;
     this.breadcrumbEl = breadcrumbEl;
     this.model = model || null;
+    this.findingsIndex = null;
     this.onFocusHost = onFocusHost || (() => {});
     this.onFocusFlow = onFocusFlow || (() => {});
     this.onFollowStream = onFollowStream || (() => {});
@@ -59,6 +60,14 @@ export class Inspector {
     this.model = model;
   }
 
+  /** Called by main.js whenever the heuristic security engine re-runs, so
+   * whatever is currently drilled into can cross-reference relevant findings
+   * as supporting context instead of a separate, disconnected list. */
+  setFindingsIndex(findingsIndex) {
+    this.findingsIndex = findingsIndex;
+    if (this.stack.length) this._render();
+  }
+
   /** Called by main.js whenever the filter/time-range changes, so open drill-down
    * lists stay consistent with what's actually visible in the 3D scene / packet list. */
   setFilterState(state) {
@@ -69,10 +78,15 @@ export class Inspector {
   showEmpty() {
     this.stack = [];
     this._renderBreadcrumb();
+    const findings = this.findingsIndex?.all || [];
+    const rollup = findings.length
+      ? `<p class="hint">${findings.length} heuristic note${findings.length === 1 ? '' : 's'} were found in this capture (e.g. ${escapeHtml(findings[0].type)}) — they’ll show up as "Related heuristic notes" right inside the explanation when you select a packet, conversation, or host they apply to, instead of a separate generic list.</p>`
+      : '';
     this.panel.innerHTML = `
       <div class="inspector-empty">
-        <p>Click any node, connection, or packet-list row to see details here.</p>
+        <p>Click any node, connection, or packet-list row to see a full plain-English explanation here — what it is, who’s talking, why the protocol behaves this way, and what to check next.</p>
         <p class="hint">Hover for a quick summary, click for the full breakdown — then drill from host &rarr; conversation &rarr; packet, or follow a stream.</p>
+        ${rollup}
       </div>`;
   }
 
@@ -140,9 +154,7 @@ export class Inspector {
       <div class="kv"><span>Protocols seen</span><b>${[...host.protocols].join(', ') || '—'}</b></div>
       <div class="kv"><span>First seen</span><b>${new Date(host.firstSeen * 1000).toLocaleTimeString()}</b></div>
       <div class="kv"><span>Last seen</span><b>${new Date(host.lastSeen * 1000).toLocaleTimeString()}</b></div>
-      <div class="explain">${host.isCluster
-        ? `This is a collapsed group of ${host.memberIds?.length ?? 0} hosts on the same subnet, shown as one node to reduce clutter. Click it in the 3D view to expand.`
-        : `This device sent or received ${host.packets} packets in the capture, communicating using ${[...host.protocols].slice(0, 4).join(', ') || 'unknown protocols'}.`}</div>
+      ${renderHostContext(host, this.model, this.findingsIndex)}
       <h4>Conversations (${sortedFlows.length}) <span class="hint">— click to drill in</span></h4>
       ${filterNote}
       <div class="drill-list">
@@ -169,7 +181,6 @@ export class Inspector {
   }
 
   _renderFlow(flow) {
-    const explanation = explainFlow(flow);
     const allPackets = this._packetsForFlow(flow);
     const { filterActive, activePacketIndexSet } = this.filterState;
     const packets = filterActive && activePacketIndexSet
@@ -186,7 +197,7 @@ export class Inspector {
       <div class="kv"><span>Bytes</span><b>${formatBytes(flow.bytes)}</b></div>
       <div class="kv"><span>Duration</span><b>${(flow.lastSeen - flow.firstSeen).toFixed(2)}s</b></div>
       <div class="kv"><span>TCP flags seen</span><b>${[...flow.flagsSeen].join(', ') || '—'}</b></div>
-      <div class="explain">${explanation.plain}</div>
+      ${renderFlowContext(flow, this.model, this.findingsIndex)}
       <div class="drill-actions">
         <button class="btn btn-ghost" id="follow-stream-btn">\u21c6 Follow this stream</button>
       </div>
@@ -255,7 +266,6 @@ export class Inspector {
   }
 
   _renderPacket(entry) {
-    const explanation = explainPacket(entry);
     const hex = toHex(entry.data);
     const ascii = toAscii(entry.data);
     const flow = entry.flowKey ? this._flowByKey(entry.flowKey) : null;
@@ -265,8 +275,7 @@ export class Inspector {
       <div class="kv"><span>Time</span><b>${formatTimestamp(entry.tsSeconds, entry.tsMicros)}</b></div>
       <div class="kv"><span>Length</span><b>${entry.length} bytes</b></div>
       <div class="kv"><span>Summary</span><b>${escapeHtml(entry.frame.summary)}</b></div>
-      <div class="explain"><b>In plain English:</b> ${explanation.plain}</div>
-      <div class="explain-tech">${escapeHtml(explanation.technical)}</div>
+      ${renderPacketContext(entry, this.model, this.findingsIndex)}
       ${flow ? `<div class="drill-actions">
         <button class="btn btn-ghost" id="view-convo-btn">\u2194 View full conversation</button>
         <button class="btn btn-ghost" id="follow-stream-btn2">\u21c6 Follow this stream</button>

@@ -121,10 +121,17 @@ synthetic capture with DNS, TLS, ARP, and TCP traffic.
   dashboard update instantly to match. Collapsible if you want more map space.
 * **Analytics dashboard** — packet/byte counts, protocol distribution, and
   top talkers, updating live with your filters.
-* **Built-in heuristic security checks** — port scan, broadcast storm,
-  ARP-spoofing, and failed-connection detection, each with a confidence
-  score, severity, explanation, and suggested next step; click a finding to
-  jump the 3D view to the affected host.
+* **Packet Explanation & Context panel** — replaces a flat "security
+  findings" list with a live, plain-English breakdown of *whatever you have
+  selected*: what the packet/conversation/host is, who's talking to whom
+  (with resolved hostnames and inferred client/server roles), how the
+  protocol normally behaves and what's notable here, where it sits in the
+  surrounding conversation, and analyst guidance on what to check next.
+  The built-in heuristic engine (port scan, broadcast storm, ARP-spoofing,
+  failed-connection detection — each with a confidence score and severity)
+  still runs in the background, but its results now surface *in context* as
+  "Related heuristic notes" on the specific packets/hosts they actually
+  apply to, instead of a disconnected list repeated everywhere.
 * **Dark mode by default**, with a light mode toggle. Collapsible left/right
   panels so the map can take the full screen when you want it to.
 * **Zero dependencies to install** — Three.js is loaded via a CDN import

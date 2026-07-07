@@ -24,6 +24,7 @@ import { buildGraphModel, flowsInRange } from './pcap/graphModel.js';
 import { computeDisplayGraph } from './pcap/clustering.js';
 import { computeEgoNetwork } from './pcap/egoNetwork.js';
 import { runSecurityChecks } from './pcap/securityEngine.js';
+import { buildFindingsIndex } from './ui/packetContext.js';
 import { Scene3D } from './viz/scene3d.js';
 import { Scene2D } from './viz/scene2d.js';
 import { Timeline } from './ui/timeline.js';
@@ -57,7 +58,6 @@ const els = {
   endpointsPanel: document.getElementById('endpoints-panel'),
   namesPanel: document.getElementById('names-panel'),
   statsTabs: document.getElementById('stats-tabs'),
-  findingsPanel: document.getElementById('findings-panel'),
   tooltip: document.getElementById('tooltip'),
   fileMeta: document.getElementById('file-meta'),
   resetViewBtn: document.getElementById('reset-view-btn'),
@@ -102,6 +102,7 @@ let inspector = null;
 let packetList = null;
 let currentRange = null;
 let displayGraph = null;
+let findingsIndex = null; // built by the heuristic engine, cross-referenced *in context* by the Inspector
 const expandedClusters = new Set();
 
 // The ego-network navigation stack. Each entry: { kind: 'host'|'flow', id, hops }.
@@ -666,32 +667,15 @@ function updateFilterStatus(filterActive, matched, total, focus, visibleHostCoun
   els.filterStatus.textContent = parts.join(' \u00b7 ');
 }
 
+/** Runs the deterministic heuristic engine once per capture/re-cluster and
+ * indexes results by host so the Inspector can fold them in as supporting
+ * context on whatever the user is currently looking at (see
+ * "Analyst guidance" in js/ui/packetContext.js), instead of a standalone,
+ * always-the-same list shown regardless of selection. */
 function renderFindings() {
   const findings = runSecurityChecks(model);
-  if (!findings.length) {
-    els.findingsPanel.innerHTML = '<p class="hint">No anomalies flagged by the built-in heuristics.</p>';
-    return;
-  }
-  els.findingsPanel.innerHTML = findings
-    .map(
-      (f, i) => `
-      <div class="finding finding-${f.severity}" data-finding-idx="${i}">
-        <div class="finding-head"><b>${f.type}</b><span class="badge badge-${f.severity}">${f.severity}</span></div>
-        <div class="finding-conf">Confidence: ${(f.confidence * 100).toFixed(0)}%</div>
-        <p>${f.explanation}</p>
-        <p class="hint"><b>Suggested next step:</b> ${f.nextSteps}</p>
-      </div>`
-    )
-    .join('');
-  els.findingsPanel.querySelectorAll('[data-finding-idx]').forEach((el, i) => {
-    el.addEventListener('click', () => {
-      const finding = findings[i];
-      const hostId = finding.affected?.[0];
-      if (hostId && displayGraph?.hosts.has(hostId)) {
-        pushFocus({ kind: 'host', id: hostId, hops: 1 });
-      }
-    });
-  });
+  findingsIndex = buildFindingsIndex(findings);
+  inspector.setFindingsIndex(findingsIndex);
 }
 
 function handleHover(userData, event) {
