@@ -184,20 +184,16 @@ export class Scene2D {
     this._startFlight(cx, cy, zoom, animated ? 0.7 : 0);
   }
 
-  /** Frames the whole current graph, or -- when nothing is laid out yet --
-   * a neutral home view. IMPORTANT: this must NOT be implemented by
-   * delegating straight back into fitToVisible(). fitToVisible() already
-   * falls back to a camera reset whenever it has no positions / no finite
-   * bounds, so a resetCamera() that unconditionally called fitToVisible()
-   * created an infinite resetCamera <-> fitToVisible mutual recursion
-   * (RangeError: "Maximum call stack size exceeded") on the very first load,
-   * before any graph had been pushed into the scene yet. */
+  // NOTE: resetCamera() must NOT unconditionally call fitToVisible().
+  // fitToVisible() already falls back to a camera reset when it has no
+  // positions / no finite bounds, so the old one-liner produced an infinite
+  // resetCamera <-> fitToVisible recursion ("Maximum call stack size
+  // exceeded") on first load, before any graph was in the scene.
   resetCamera(animated = false) {
     if (this.positions.size) return this.fitToVisible(animated);
     this._resetToDefault(animated);
   }
 
-  /** Neutral "home" framing used when there is nothing (finite) to fit. */
   _resetToDefault(animated = false) {
     this._startFlight(0, 0, 1, animated ? 0.7 : 0);
   }
