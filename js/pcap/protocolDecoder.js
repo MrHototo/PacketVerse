@@ -32,40 +32,26 @@ export function decodeFrame(data, linkType) {
   const layers = { l2: null, l3: null, l4: null, l7: null };
   let tags = new Set();
 
-  if (linkType !== 1 || data.length < 14) {
+  const link = resolveLinkLayer(data, linkType, tags);
+  if (!link) {
     layers.l2 = { type: 'Unknown link layer', linkType };
-    return { layers, tags: [...tags], summary: 'Unrecognized link layer' };
+    return { layers, tags: [...tags], summary: `Unrecognized link layer (type ${linkType})` };
   }
 
-  const dstMac = macToString(data, 0);
-  const srcMac = macToString(data, 6);
-  let etherType = (data[12] << 8) | data[13];
-  let ethPayloadOffset = 14;
-  let vlanId = null;
-
-  if (etherType === ETHERTYPE_VLAN && data.length >= 18) {
-    vlanId = ((data[14] << 8) | data[15]) & 0x0fff;
-    etherType = (data[16] << 8) | data[17];
-    ethPayloadOffset = 18;
-    tags.add('VLAN');
-  }
-
-  const isBroadcast = dstMac === 'ff:ff:ff:ff:ff:ff';
-  const isMulticast = !isBroadcast && (data[0] & 0x01) !== 0;
-  if (isBroadcast) tags.add('Broadcast');
-  else if (isMulticast) tags.add('Multicast');
-  else tags.add('Unicast');
-
-  layers.l2 = { srcMac, dstMac, etherType, vlanId, isBroadcast, isMulticast };
+  layers.l2 = link.l2;
+  const etherType = link.etherType;
+  const l3Offset = link.offset;
+  const srcMac = link.l2?.srcMac ?? null;
+  const dstMac = link.l2?.dstMac ?? null;
 
   if (etherType === ETHERTYPE_ARP) {
-    layers.l3 = decodeArp(data, ethPayloadOffset);
+    layers.l3 = decodeArp(data, l3Offset);
     tags.add('ARP');
     return finish(layers, tags, srcMac, dstMac);
   }
 
   if (etherType === ETHERTYPE_IPV4) {
-    const ip = decodeIPv4(data, ethPayloadOffset);
+    const ip = decodeIPv4(data, l3Offset);
     layers.l3 = ip;
     tags.add('IPv4');
     decodeTransport(data, ip, layers, tags);
@@ -73,7 +59,7 @@ export function decodeFrame(data, linkType) {
   }
 
   if (etherType === ETHERTYPE_IPV6) {
-    const ip = decodeIPv6(data, ethPayloadOffset);
+    const ip = decodeIPv6(data, l3Offset);
     layers.l3 = ip;
     tags.add('IPv6');
     decodeTransport(data, ip, layers, tags);
@@ -84,6 +70,109 @@ export function decodeFrame(data, linkType) {
   return finish(layers, tags, srcMac, dstMac);
 }
 
+// ---------------------------------------------------------------------------
+// Link-layer normalization. Different capture sources use different pcap
+// LINKTYPE_* (DLT) values -- appliances/routers that capture on the Linux
+// "any" device (or a bridge) commonly emit Linux "cooked" SLL/SLL2 frames or
+// raw IP with no Ethernet header at all, which is exactly why NIOS .cap files
+// showed up as "unrecognized link layer" before. Rather than special-casing
+// Ethernet only, this collapses every supported link type down to a common
+// {etherType, l3 payload offset} shape (synthesizing an EtherType from the IP
+// version for the header-less/cooked types) so the existing IPv4/IPv6/ARP
+// decoders work unchanged regardless of how the frame was captured.
+// ---------------------------------------------------------------------------
+const LINKTYPE_NULL = 0;
+const LINKTYPE_ETHERNET = 1;
+const LINKTYPE_RAW_DLT = 12;      // DLT_RAW on some platforms
+const LINKTYPE_RAW_DLT_ALT = 14;
+const LINKTYPE_LINUX_SLL = 113;   // Linux "cooked" capture v1 (16-byte header)
+const LINKTYPE_LOOP = 108;        // OpenBSD loopback (network byte order family)
+const LINKTYPE_RAW = 101;         // raw IP, no link-layer header
+const LINKTYPE_LINUX_SLL2 = 276;  // Linux "cooked" capture v2 (20-byte header)
+const ETHERTYPE_VLAN_QINQ = 0x88a8;
+
+/** Peels off any number of stacked 802.1Q/802.1ad VLAN tags, returning the
+ * inner EtherType, the offset just past the tags, and the last VLAN id seen. */
+function unwrapVlan(data, etherType, offset, tags) {
+  let vlanId = null;
+  while ((etherType === ETHERTYPE_VLAN || etherType === ETHERTYPE_VLAN_QINQ) && data.length >= offset + 4) {
+    vlanId = ((data[offset] << 8) | data[offset + 1]) & 0x0fff;
+    etherType = (data[offset + 2] << 8) | data[offset + 3];
+    offset += 4;
+    tags.add('VLAN');
+  }
+  return { etherType, offset, vlanId };
+}
+
+/** Maps a raw IP payload's first-nibble version to a synthetic EtherType so
+ * header-less link types flow through the same IPv4/IPv6 dispatch. */
+function etherTypeForIpVersion(firstByte) {
+  const version = firstByte >> 4;
+  if (version === 4) return ETHERTYPE_IPV4;
+  if (version === 6) return ETHERTYPE_IPV6;
+  return null;
+}
+
+function resolveLinkLayer(data, linkType, tags) {
+  // Ethernet (DLT 1) -- the original path, now with stacked-VLAN support.
+  if (linkType === LINKTYPE_ETHERNET) {
+    if (data.length < 14) return null;
+    const dstMac = macToString(data, 0);
+    const srcMac = macToString(data, 6);
+    let etherType = (data[12] << 8) | data[13];
+    let offset = 14;
+    const vlan = unwrapVlan(data, etherType, offset, tags);
+    etherType = vlan.etherType; offset = vlan.offset;
+    const isBroadcast = dstMac === 'ff:ff:ff:ff:ff:ff';
+    const isMulticast = !isBroadcast && (data[0] & 0x01) !== 0;
+    if (isBroadcast) tags.add('Broadcast');
+    else if (isMulticast) tags.add('Multicast');
+    else tags.add('Unicast');
+    return { etherType, offset, l2: { srcMac, dstMac, etherType, vlanId: vlan.vlanId, isBroadcast, isMulticast } };
+  }
+
+  // Linux "cooked" SLL (DLT 113): 16-byte header, EtherType at bytes 14-15.
+  if (linkType === LINKTYPE_LINUX_SLL) {
+    if (data.length < 16) return null;
+    const rawType = (data[14] << 8) | data[15];
+    const vlan = unwrapVlan(data, rawType, 16, tags);
+    return { etherType: vlan.etherType, offset: vlan.offset, l2: { type: 'Linux cooked capture (SLL)', linkType, etherType: vlan.etherType, vlanId: vlan.vlanId } };
+  }
+
+  // Linux "cooked" SLL2 (DLT 276): 20-byte header, EtherType at bytes 0-1.
+  if (linkType === LINKTYPE_LINUX_SLL2) {
+    if (data.length < 20) return null;
+    const rawType = (data[0] << 8) | data[1];
+    const vlan = unwrapVlan(data, rawType, 20, tags);
+    return { etherType: vlan.etherType, offset: vlan.offset, l2: { type: 'Linux cooked capture v2 (SLL2)', linkType, etherType: vlan.etherType, vlanId: vlan.vlanId } };
+  }
+
+  // Raw IP, no link-layer header (DLT 101/12/14): version from first nibble.
+  if (linkType === LINKTYPE_RAW || linkType === LINKTYPE_RAW_DLT || linkType === LINKTYPE_RAW_DLT_ALT) {
+    if (data.length < 1) return null;
+    const etherType = etherTypeForIpVersion(data[0]);
+    if (etherType == null) return null;
+    return { etherType, offset: 0, l2: { type: 'Raw IP (no link layer)', linkType } };
+  }
+
+  // BSD loopback / null (DLT 0 host-order, DLT 108 network-order): 4-byte
+  // address-family header. AF_INET=2 -> IPv4; 24/28/30 -> IPv6 (BSD variants).
+  if (linkType === LINKTYPE_NULL || linkType === LINKTYPE_LOOP) {
+    if (data.length < 4) return null;
+    const be = linkType === LINKTYPE_LOOP;
+    const family = be
+      ? (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
+      : (data[3] << 24) | (data[2] << 16) | (data[1] << 8) | data[0];
+    let etherType = null;
+    if (family === 2) etherType = ETHERTYPE_IPV4;
+    else if (family === 24 || family === 28 || family === 30) etherType = ETHERTYPE_IPV6;
+    else etherType = etherTypeForIpVersion(data[4] ?? 0); // fall back to sniffing the payload
+    if (etherType == null) return null;
+    return { etherType, offset: 4, l2: { type: 'Null/Loopback', linkType } };
+  }
+
+  return null; // genuinely unsupported link type
+}
 function finish(layers, tags, endpointA, endpointB) {
   return {
     layers,
