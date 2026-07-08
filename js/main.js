@@ -372,15 +372,37 @@ function togglePanel(side, persist = true, forceCollapsed = null) {
   if (persist) localStorage.setItem(side === 'left' ? 'pv_leftPanelOpen' : 'pv_rightPanelOpen', String(!collapsed));
 }
 
+/** Transparently gunzips a buffer whose first two bytes are the gzip magic
+ * (0x1f 0x8b) using the browser-native DecompressionStream. Capture files are
+ * very commonly distributed gzip-compressed (e.g. capture.pcap.gz,
+ * nios-traffic.cap.gz), so we handle that here rather than making the user
+ * decompress by hand. Non-gzip buffers are returned untouched. If the browser
+ * lacks DecompressionStream, we surface a clear, actionable error instead of a
+ * cryptic "Unrecognized file format" from the binary parser. */
+async function maybeGunzip(buffer) {
+  const head = new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength));
+  if (head.length < 2 || head[0] !== 0x1f || head[1] !== 0x8b) return buffer;
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('This looks like a gzip-compressed capture, but this browser can’t decompress it. Please gunzip the file first, then upload the raw .pcap/.pcapng/.cap.');
+  }
+  const stream = new Response(buffer).body.pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(stream).arrayBuffer();
+}
+
 async function loadFile(file) {
   showProgress(0);
   els.fileMeta.textContent = `Parsing ${file.name} (${(file.size / 1024).toFixed(1)} KB)…`;
-  const buffer = await file.arrayBuffer();
+  let buffer = await file.arrayBuffer();
   let parsed;
   try {
+    // Auto-decompress .gz captures first — the underlying format detection is
+    // by magic bytes (not file extension), so once decompressed a NIOS .cap,
+    // a .dmp, a .pkt, etc. all parse as whatever they actually are (classic
+    // libpcap or pcapng) regardless of the name they were saved under.
+    buffer = await maybeGunzip(buffer);
     parsed = parseCapture(buffer, (done, total) => showProgress(done / total));
   } catch (err) {
-    els.fileMeta.textContent = `Failed to parse: ${err.message}`;
+    els.fileMeta.textContent = `Failed to parse ${file.name}: ${err.message}`;
     showProgress(null);
     return;
   }
@@ -679,12 +701,7 @@ function refreshViewsInner() {
     const focusHostIds = focus.kind === 'host'
       ? [focus.id]
       : (() => {
-          // focus.id may be a RAW model-flow key (Inspector "View full
-          // conversation") or an already-DISPLAY key (dashboard). Normalize
-          // to display space first so clustered captures resolve the flow's
-          // hosts instead of narrowing to an empty set.
-          const displayKey = displayGraph.rawFlowKeyToDisplayKey.get(focus.id) || focus.id;
-          const f = filteredFlows.get(displayKey) || displayGraph.flows.get(displayKey);
+          const f = filteredFlows.get(focus.id) || displayGraph.flows.get(focus.id);
           return f ? [f.hostA, f.hostB] : [];
         })();
     const ego = computeEgoNetwork(filteredHosts, filteredFlows, focusHostIds, focus.hops);

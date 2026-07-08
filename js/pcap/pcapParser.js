@@ -39,7 +39,10 @@ export function parseCapture(buffer, onProgress) {
     return parseClassicPcap(buffer, onProgress);
   }
   throw new Error(
-    'Unrecognized file format. Expected a .pcap or .pcapng capture.'
+    'Unrecognized capture format (bad magic bytes). Supported: classic libpcap ' +
+    '(.pcap/.cap/.dmp/.pkt) and pcapng (.pcapng/.ntar), optionally gzip-compressed. ' +
+    'If this is a Microsoft Netmon .cap or a Solaris snoop file, re-export it as ' +
+    'pcap/pcapng from Wireshark first.'
   );
 }
 

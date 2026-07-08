@@ -25,8 +25,8 @@
     <div class="topbar-actions">
       <span id="file-meta" class="file-meta">No capture loaded</span>
       <button id="load-demo-btn" class="btn btn-ghost">Try demo capture</button>
-      <label class="btn btn-primary" for="file-input">Upload PCAP / PCAPNG</label>
-      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden />
+      <label class="btn btn-primary" for="file-input">Upload capture</label>
+      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap,.dmp,.pkt,.ncap,.ntar,.gz,.pcap.gz,.pcapng.gz,.cap.gz,application/vnd.tcpdump.pcap,application/x-pcapng,application/octet-stream" hidden />
       <button id="theme-toggle" class="btn btn-icon" title="Toggle light/dark">◐</button>
     </div>
   </header>
@@ -34,7 +34,7 @@
   <main id="app">
     <div id="drop-zone" class="drop-zone">
       <div class="drop-inner">
-        <p class="drop-title">Drop a .pcap / .pcapng file anywhere, or</p>
+        <p class="drop-title">Drop a capture file anywhere (.pcap, .pcapng, .cap, .dmp&hellip; incl. .gz), or</p>
         <label class="btn btn-primary" for="file-input">choose a file</label>
         <p class="hint">Everything is parsed locally in your browser — nothing is uploaded to a server.</p>
         <button id="load-demo-btn-2" class="btn btn-ghost" onclick="document.getElementById('load-demo-btn').click()">Or try the demo capture</button>
